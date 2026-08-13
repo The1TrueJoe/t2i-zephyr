@@ -1,0 +1,6 @@
+board:
+  name: t2i
+  full_name: RTI T2i (STM32F205VET6)
+  vendor: st
+  socs:
+    - name: stm32f205xx

@@ -1,0 +1,61 @@
+/*
+ * RTI T2i — STM32F205VET6 (LQFP100, 512K flash, 128K RAM), 25 MHz HSE crystal.
+ * Chain-loaded by RTI's bootloader (sector 0) which jumps to *(0x08004004),
+ * so our image lives at 0x08004000 (slot0_partition + USE_DT_CODE_PARTITION).
+ */
+/dts-v1/;
+#include <st/f2/stm32f205Xe.dtsi>
+#include <st/f2/stm32f205v(b-c-e-f-g)tx-pinctrl.dtsi>
+
+/ {
+	model = "RTI T2i (STM32F205VET6)";
+	compatible = "st,stm32f205vet6";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(25)>;   /* 25 MHz crystal (reversed from RTI fw) */
+	status = "okay";
+};
+
+&pll {
+	div-m = <25>;   /* 25 MHz / 25 = 1 MHz PLL input */
+	mul-n = <240>;  /* -> 240 MHz VCO */
+	div-p = <2>;    /* -> 120 MHz SYSCLK */
+	div-q = <5>;    /* -> 48 MHz USB */
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(120)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <4>;
+	apb2-prescaler = <2>;
+};
+
+&flash0 {
+	partitions {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* RTI bootloader occupies sector 0 (16K) — must not be overwritten */
+		boot_partition: partition@0 {
+			label = "rti-bootloader";
+			reg = <0x0 0x4000>;
+			read-only;
+		};
+
+		/* our app: sectors 1..7 (0x08004000..0x0807FFFF, 496K) */
+		slot0_partition: partition@4000 {
+			label = "image-0";
+			reg = <0x4000 0x7C000>;
+		};
+	};
+};

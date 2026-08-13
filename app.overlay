@@ -1,0 +1,20 @@
+/*
+ * USB CDC-ACM console over OTG-FS (PA11/PA12), NEW usbd device stack.
+ * Attaching the `zephyr_udc0` nodelabel lets the CDC-ACM auto-init
+ * (subsys/usb/device_next/app/cdc_acm_serial.c) find the controller.
+ */
+zephyr_udc0: &usbotg_fs {
+	pinctrl-0 = <&usb_otg_fs_dm_pa11 &usb_otg_fs_dp_pa12>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart0;
+	};
+};
