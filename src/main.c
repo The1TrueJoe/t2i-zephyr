@@ -3,7 +3,7 @@
  * Reverse-engineered from stock RTI:
  *   command byte -> *(0x60000000), data byte -> *(0x60040000)  (RS/DC = A18 = PD13)
  *   FSMC bank1/NE1, 8-bit; data PD14/15/0/1 + PE7-10; RD=PD4 WR=PD5 CS=PD7 RS=PD13
- *   PD6 = LCD control (reset). Backlight pin unknown -> drive candidates high.
+ *   PD6 = LCD control (reset). Backlight = TIM2_CH2 PWM on PA1 (RTI's config).
  * Draws color bars so we can see it working.
  */
 #include <zephyr/kernel.h>
@@ -91,16 +91,23 @@ static void lcd_init(void)
 	REG(0x40010400) = (1u<<0);               /* CR1: CEN */
 	/* keypad backlight confirmed = TIM8_CH3/PC8 (above). */
 
-	/* LCD backlight: TIM5_CH1 PWM on PA0 (AF2), the other configured PWM in RTI.
-	 * Drive it bright (90%) to make the screen clearly visible. */
-	REG(0x40023840) |= (1u<<3);              /* RCC_APB1ENR TIM5EN */
-	pin_af(0, 0, 2);                         /* PA0 -> AF2 = TIM5_CH1 */
-	REG(0x40000C28) = 119;                   /* PSC -> ~1 kHz */
-	REG(0x40000C2C) = 1000;                  /* ARR */
-	REG(0x40000C34) = 900;                   /* CCR1 = 90% */
-	REG(0x40000C18) = (6u<<4)|(1u<<3);       /* CCMR1: OC1M=PWM1, OC1PE */
-	REG(0x40000C20) = (1u<<0);               /* CCER: CC1E */
-	REG(0x40000C00) = (1u<<0);               /* CR1: CEN */
+	/* LCD backlight: TIM2_CH2 PWM on PA1 (AF1). Config is RTI's *exact* live
+	 * register values (read over SWD), so the duty cannot over-volt the LEDs:
+	 * PSC=9, ARR=3000 (~4 kHz), CCR2=60, PWM mode 2 + preload, active-low. */
+	REG(0x40023840) |= (1u<<0);              /* RCC_APB1ENR TIM2EN */
+	pin_af(0, 1, 1);                         /* PA1 -> AF1 = TIM2_CH2 */
+	REG(0x40000028) = 9;                     /* PSC */
+	REG(0x4000002C) = 3000;                  /* ARR (0xBB8) */
+	REG(0x40000038) = 1500;                  /* CCR2 = 50% high. RTI's idle value
+	                                          * was 60 (~2% = near-off shutdown);
+	                                          * this drives the dimming input to a
+	                                          * clearly-on level. Driver regulates
+	                                          * LED current, so higher duty only
+	                                          * brightens — cannot over-volt. */
+	REG(0x40000018) = 0x7800;                /* CCMR1: OC2M=PWM mode2 + OC2PE */
+	REG(0x40000020) = 0x30;                  /* CCER: CC2E + CC2P (active-low) */
+	REG(0x40000014) = (1u<<0);               /* EGR: UG — latch preload regs */
+	REG(0x40000000) = (1u<<0);               /* CR1: CEN */
 
 	/* FSMC data + control pins -> AF12 */
 	int dpins[] = {0,1,4,5,7,13,14,15};
@@ -108,11 +115,10 @@ static void lcd_init(void)
 	int epins[] = {7,8,9,10};
 	for (unsigned i=0;i<sizeof(epins)/sizeof(epins[0]);i++) pin_af(4, epins[i], 12);  /* GPIOE */
 
-	/* control: PD6 = reset; backlight candidates high */
-	pin_out(3, 6, 1);   /* PD6 */
-	pin_out(0, 10, 1);  /* PA10 backlight? */
-	pin_out(2, 12, 1);  /* PC12 backlight? */
-	pin_out(2, 13, 1);  /* PC13 backlight? */
+	/* control: PD6 = LCD reset (only). PA10/PC12/PC13 were wrong backlight
+	 * guesses — reversing shows they are control/chip-select lines, not the
+	 * backlight, so we no longer drive them. */
+	pin_out(3, 6, 1);   /* PD6 = LCD reset */
 
 	/* FSMC bank1: 8-bit NOR, WREN, FACCEN (no EXTMOD -> BTR used for r/w) */
 	FSMC_BTR1 = 0x00102D11;
