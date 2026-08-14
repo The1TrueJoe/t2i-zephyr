@@ -75,4 +75,32 @@
 #define TIM_CCMR_PWM1_PE(shift)  ((6u << (shift)) | (1u << ((shift) - 1)))  /* OCxM=PWM1 + OCxPE */
 #define TIM_BDTR_MOE   (1u << 15)
 
+/* ---- extra GPIO regs (touch needs pull config + input read) ---- */
+#define GPIO_PUPDR(p)  REG32(GPIO_BASE(p) + 0x0C)
+#define GPIO_IDR(p)    REG32(GPIO_BASE(p) + 0x10)
+
+/* ---- ADC2 (touchscreen, channels IN3..IN6 = PA3..PA6). APB2. ---- */
+#define ADC2_BASE      0x40012100u
+#define ADC2_SR        REG32(ADC2_BASE + 0x00)
+#define ADC2_CR1       REG32(ADC2_BASE + 0x04)
+#define ADC2_CR2       REG32(ADC2_BASE + 0x08)
+#define ADC2_SMPR1     REG32(ADC2_BASE + 0x0C)   /* channels 10..18 */
+#define ADC2_SMPR2     REG32(ADC2_BASE + 0x10)   /* channels 0..9 */
+#define ADC2_SQR1      REG32(ADC2_BASE + 0x2C)
+#define ADC2_SQR3      REG32(ADC2_BASE + 0x34)
+#define ADC2_DR        REG32(ADC2_BASE + 0x4C)
+#define ADC_CCR        REG32(0x40012300u + 0x04) /* common control (prescaler) */
+#define ADC_SR_EOC     (1u << 1)
+#define ADC_CR2_ADON   (1u << 0)
+#define ADC_CR2_SWSTART (1u << 30)
+
+/* ---- TIM3 (speaker/beeper, CH3 -> PB0 AF2). Timer clock = 60 MHz. ---- */
+#define TIM3_BASE      0x40000400u
+#define TIM3_CR1       REG32(TIM3_BASE + 0x00)
+#define TIM3_CCMR2     REG32(TIM3_BASE + 0x1C)
+#define TIM3_CCER      REG32(TIM3_BASE + 0x20)
+#define TIM3_PSC       REG32(TIM3_BASE + 0x28)
+#define TIM3_ARR       REG32(TIM3_BASE + 0x2C)
+#define TIM3_CCR3      REG32(TIM3_BASE + 0x3C)
+
 #endif /* T2I_REGS_H */

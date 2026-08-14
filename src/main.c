@@ -1,26 +1,28 @@
 /*
- * T2i LVGL app: renders a live X/Y/Z accelerometer chart on the HX8347 LCD.
- * Display comes from the hx8347_fsmc Zephyr driver (chosen zephyr,display);
- * LVGL auto-inits against it. Accelerometer = LIS3DH on I2C2, slave 0x18.
+ * T2i touch demo: draws a pin where you touch the resistive screen and plays a
+ * click on the beeper. Display via the hx8347_fsmc Zephyr driver + LVGL;
+ * touch + beep via src/touch.c (ADC2 4-wire + TIM3/PB0).
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
-#include <zephyr/drivers/i2c.h>
 #include <lvgl.h>
 #include <stdio.h>
 #include <stdint.h>
+#include "touch.h"
 
-#define ACC_ADDR 0x18
-static const struct device *i2c2;
+#define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
-static int acc_wr(uint8_t reg, uint8_t val)
+/* Provisional raw-ADC -> screen calibration (240x320). Tune the sign/scale
+ * after seeing raw corner values (stored at 0x2001FF30/34). */
+#define RAW_MIN 200
+#define RAW_MAX 3900
+static int map_axis(int raw, int screen)
 {
-	return i2c_reg_write_byte(i2c2, ACC_ADDR, reg, val);
-}
-static int acc_rd(uint8_t reg, uint8_t *buf, uint8_t n)
-{
-	return i2c_burst_read(i2c2, ACC_ADDR, (n > 1) ? (reg | 0x80) : reg, buf, n);
+	int v = (raw - RAW_MIN) * screen / (RAW_MAX - RAW_MIN);
+	if (v < 0) v = 0;
+	if (v > screen - 1) v = screen - 1;
+	return v;
 }
 
 int main(void)
@@ -30,53 +32,62 @@ int main(void)
 		return 0;
 	}
 	display_blanking_off(disp);
+	touch_init();
+	beep_init();
+	beep_test();   /* two beeps at boot — tells us if the speaker path works */
 
-	/* accelerometer bring-up */
-	i2c2 = DEVICE_DT_GET(DT_NODELABEL(i2c2));
-	bool acc_ok = device_is_ready(i2c2);
-	if (acc_ok) {
-		acc_wr(0x20, 0x57);   /* CTRL_REG1: 100 Hz, X/Y/Z enabled */
-		acc_wr(0x23, 0x08);   /* CTRL_REG4: high-resolution */
-	}
-
-	/* --- LVGL UI --- */
 	lv_obj_t *scr = lv_scr_act();
 
 	lv_obj_t *title = lv_label_create(scr);
-	lv_label_set_text(title, "T2i accelerometer");
+	lv_label_set_text(title, "Touch the screen");
 	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
-	lv_obj_t *chart = lv_chart_create(scr);
-	lv_obj_set_size(chart, 224, 220);
-	lv_obj_align(chart, LV_ALIGN_CENTER, 0, 0);
-	lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-	lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, -160, 160);
-	lv_chart_set_point_count(chart, 60);
-	lv_chart_series_t *sx = lv_chart_add_series(chart, lv_color_hex(0xFF3030), LV_CHART_AXIS_PRIMARY_Y);
-	lv_chart_series_t *sy = lv_chart_add_series(chart, lv_color_hex(0x30FF30), LV_CHART_AXIS_PRIMARY_Y);
-	lv_chart_series_t *sz = lv_chart_add_series(chart, lv_color_hex(0x4080FF), LV_CHART_AXIS_PRIMARY_Y);
+	lv_obj_t *info = lv_label_create(scr);
+	lv_label_set_text(info, "raw: --");
+	lv_obj_align(info, LV_ALIGN_BOTTOM_MID, 0, -6);
 
-	lv_obj_t *val = lv_label_create(scr);
-	lv_label_set_text(val, "X:-- Y:-- Z:--");
-	lv_obj_align(val, LV_ALIGN_BOTTOM_MID, 0, -8);
+	/* the "pin": a small red circle, hidden until touched */
+	lv_obj_t *pin = lv_obj_create(scr);
+	lv_obj_set_size(pin, 18, 18);
+	lv_obj_set_style_radius(pin, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_bg_color(pin, lv_color_hex(0xFF3040), 0);
+	lv_obj_set_style_border_width(pin, 2, 0);
+	lv_obj_set_style_border_color(pin, lv_color_hex(0xFFFFFF), 0);
+	lv_obj_add_flag(pin, LV_OBJ_FLAG_HIDDEN);
 
+	int was_pressed = 0;
+	uint32_t n = 0, presses = 0;
+	int minX = 9999, maxX = 0, minY = 9999, maxY = 0;   /* calibration capture */
 	while (1) {
-		if (acc_ok) {
-			uint8_t d[6];
-			if (acc_rd(0x28, d, 6) == 0) {
-				int16_t x = (int16_t)(d[0] | (d[1] << 8));
-				int16_t y = (int16_t)(d[2] | (d[3] << 8));
-				int16_t z = (int16_t)(d[4] | (d[5] << 8));
-				lv_chart_set_next_value(chart, sx, x);
-				lv_chart_set_next_value(chart, sy, y);
-				lv_chart_set_next_value(chart, sz, z);
-				char b[40];
-				snprintf(b, sizeof(b), "X:%d  Y:%d  Z:%d", x, y, z);
-				lv_label_set_text(val, b);
+		int rx = 0, ry = 0;
+		int pressed = touch_read(&rx, &ry);
+		MARK(0x30, (uint16_t)rx | ((uint32_t)(uint16_t)ry << 16));   /* raw X | Y<<16 */
+		MARK(0x34, pressed);
+		MARK(0x38, ++n);
+
+		if (pressed) {
+			if (rx < minX) minX = rx;  if (rx > maxX) maxX = rx;
+			if (ry < minY) minY = ry;  if (ry > maxY) maxY = ry;
+			MARK(0x40, (uint16_t)minX | ((uint32_t)(uint16_t)maxX << 16));
+			MARK(0x44, (uint16_t)minY | ((uint32_t)(uint16_t)maxY << 16));
+			MARK(0x48, ++presses);
+			int sx = map_axis(rx, 240);
+			int sy = map_axis(ry, 320);
+			lv_obj_set_pos(pin, sx - 9, sy - 9);
+			lv_obj_clear_flag(pin, LV_OBJ_FLAG_HIDDEN);
+			char b[48];
+			snprintf(b, sizeof(b), "raw %d,%d  -> %d,%d", rx, ry, sx, sy);
+			lv_label_set_text(info, b);
+			if (!was_pressed) {
+				beep_click();   /* click on touch-down */
 			}
+		} else {
+			lv_obj_add_flag(pin, LV_OBJ_FLAG_HIDDEN);
 		}
+		was_pressed = pressed;
+
 		lv_timer_handler();
-		k_msleep(30);
+		k_msleep(20);
 	}
 	return 0;
 }
