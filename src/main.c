@@ -1,245 +1,148 @@
 /*
- * T2i custom firmware — USB update RECEIVER.
- *
- * Speaks the reverse-engineered RTI update protocol over USB CDC, stages the
- * incoming image to the external SPI-NOR (raw SPI, 4-byte ops), then lets the
- * untouched RTI bootloader commit it — so the device is re-flashable over USB
- * on a sealed remote (restore RTI or push a new build), no pins.
- *
- * Protocol (64-byte frames, byte0=type):
- *   0x83 -> reply device info (we send a short "Remote Technologies" blob)
- *   0x82 [00 01] <declaredLE32> -> start: erase staging, reset counters
- *   0x80 + 63 bytes            -> data: sum + write to SPI staging
- * When `declared` bytes are summed and the 8-bit sum == 0: SPI marker is already
- * in the staged image at 0x01FFFFFC; invalidate the internal marker (erase
- * sector 7) and SYSRESETREQ -> bootloader commits SPI@0x01F84000 -> flash@0x08004000.
- *
- * Debug: progress written to high-RAM markers (read over SWD) since the CDC is
- * the protocol channel.  0x2001FF20=state 24=recv 28=declared 2C=result.
+ * T2i LCD bring-up test — ILI9341 320x240 on an 8-bit FSMC parallel bus.
+ * Reverse-engineered from stock RTI:
+ *   command byte -> *(0x60000000), data byte -> *(0x60040000)  (RS/DC = A18 = PD13)
+ *   FSMC bank1/NE1, 8-bit; data PD14/15/0/1 + PE7-10; RD=PD4 WR=PD5 CS=PD7 RS=PD13
+ *   PD6 = LCD control (reset). Backlight pin unknown -> drive candidates high.
+ * Draws color bars so we can see it working.
  */
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/spi.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/usb/usbd.h>
-#include <zephyr/sys/ring_buffer.h>
 #include <stdint.h>
-#include <string.h>
 
-#define DBG(n)   (*(volatile uint32_t *)(0x2001FF20U + ((n) * 4U)))  /* 0..3 */
+#define REG(a) (*(volatile uint32_t *)(a))
+#define RCC_AHB1ENR REG(0x40023830)
+#define RCC_AHB3ENR REG(0x40023838)
 
-/* ---- staging geometry (decoded from bootloader) ---- */
-#define SPI_IMAGE_BASE   0x01F84000u          /* staged image start */
-#define SPI_MARKER_ADDR  0x01FFFFFCu          /* SPI commit marker  */
-#define APP_REGION_SIZE  0x0007C000u          /* 496 KB (bytes committed) */
+#define GPIO(p)   (0x40020000u + (p) * 0x400u)   /* p: 0=A..4=E */
+#define MODER(p)  REG(GPIO(p) + 0x00)
+#define OTYPER(p) REG(GPIO(p) + 0x04)
+#define OSPEEDR(p)REG(GPIO(p) + 0x08)
+#define PUPDR(p)  REG(GPIO(p) + 0x0C)
+#define ODR(p)    REG(GPIO(p) + 0x14)
+#define BSRR(p)   REG(GPIO(p) + 0x18)
+#define AFRL(p)   REG(GPIO(p) + 0x20)
+#define AFRH(p)   REG(GPIO(p) + 0x24)
 
-/* ---- USB device: impersonate the genuine RTI T2i so Integration Designer
- *      recognizes it and can restore stock firmware over USB ---- */
-USBD_DEVICE_DEFINE(t2i_usbd, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), 0x13BD, 0x1028);
-USBD_DESC_LANG_DEFINE(t2i_lang);
-USBD_DESC_MANUFACTURER_DEFINE(t2i_mfr, "Remote Technologies");
-USBD_DESC_PRODUCT_DEFINE(t2i_product, "T2i");
-USBD_DESC_CONFIG_DEFINE(t2i_cfg_desc, "FS Config");
-static const uint8_t attributes = USB_SCD_SELF_POWERED;
-USBD_CONFIGURATION_DEFINE(t2i_fs_config, attributes, 125, &t2i_cfg_desc);
+#define FSMC_BCR1 REG(0xA0000000)
+#define FSMC_BTR1 REG(0xA0000004)
 
-static const struct device *const cdc = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
-static const struct spi_dt_spec flash_spi =
-	SPI_DT_SPEC_GET(DT_NODELABEL(extflash), SPI_WORD_SET(8) | SPI_TRANSFER_MSB, 0);
+#define LCD_CMD  (*(volatile uint8_t *)0x60000000)
+#define LCD_DAT  (*(volatile uint8_t *)0x60040000)
 
-/* ---- raw SPI-NOR ops (S25FL256S, 4-byte addressing) ---- */
-static void spi_send(const uint8_t *b0, size_t n0, const uint8_t *b1, size_t n1)
+static void pin_af(int port, int pin, int af)
 {
-	struct spi_buf bufs[2] = { {.buf = (void *)b0, .len = n0},
-				   {.buf = (void *)b1, .len = n1} };
-	struct spi_buf_set set = {.buffers = bufs, .count = n1 ? 2 : 1};
-	(void)spi_write_dt(&flash_spi, &set);
+	MODER(port) = (MODER(port) & ~(3u << (pin * 2))) | (2u << (pin * 2));   /* AF mode */
+	OSPEEDR(port) |= (3u << (pin * 2));                                     /* high speed */
+	if (pin < 8) AFRL(port) = (AFRL(port) & ~(0xFu << (pin * 4))) | ((uint32_t)af << (pin * 4));
+	else         AFRH(port) = (AFRH(port) & ~(0xFu << ((pin - 8) * 4))) | ((uint32_t)af << ((pin - 8) * 4));
 }
-static void spi_wren(void) { uint8_t c = 0x06; spi_send(&c, 1, NULL, 0); }
-static uint8_t spi_rdsr(void)
+static void pin_out(int port, int pin, int val)
 {
-	uint8_t tx[2] = {0x05, 0}, rx[2] = {0};
-	struct spi_buf tb = {.buf = tx, .len = 2}, rb = {.buf = rx, .len = 2};
-	struct spi_buf_set ts = {.buffers = &tb, .count = 1}, rs = {.buffers = &rb, .count = 1};
-	(void)spi_transceive_dt(&flash_spi, &ts, &rs);
-	return rx[1];
-}
-static void spi_wait(void) { while (spi_rdsr() & 0x01) { k_yield(); } }
-static void spi_erase64k(uint32_t a)
-{
-	uint8_t c[5] = {0xDC, a >> 24, a >> 16, a >> 8, a};
-	spi_wren(); spi_send(c, 5, NULL, 0); spi_wait();
-}
-static void spi_pp(uint32_t a, const uint8_t *d, size_t n)
-{
-	uint8_t h[5] = {0x12, a >> 24, a >> 16, a >> 8, a};
-	spi_wren(); spi_send(h, 5, d, n); spi_wait();
-}
-/* Clear any latched erase/program error (else WIP stays stuck) and remove the
- * power-on block protection so the staging area is erasable/writable. */
-static void spi_unprotect(void)
-{
-	uint8_t clsr = 0x30; spi_send(&clsr, 1, NULL, 0);   /* CLSR: clear E_ERR/P_ERR + WIP */
-	spi_wren();
-	uint8_t wrr[2] = {0x01, 0x00};                       /* WRR: SR1=0 -> BP=0, SRWD=0 */
-	spi_send(wrr, 2, NULL, 0);
-	spi_wait();
+	MODER(port) = (MODER(port) & ~(3u << (pin * 2))) | (1u << (pin * 2));   /* output */
+	OSPEEDR(port) |= (3u << (pin * 2));
+	BSRR(port) = val ? (1u << pin) : (1u << (pin + 16));
 }
 
-/* ---- internal flash: erase sector 7 to invalidate marker @0x0807FFFC ---- */
-#define FLASH_KEYR (*(volatile uint32_t *)0x40023C04)
-#define FLASH_SR   (*(volatile uint32_t *)0x40023C0C)
-#define FLASH_CR   (*(volatile uint32_t *)0x40023C10)
-static void invalidate_internal_marker(void)
+static inline void lcd_cmd(uint8_t c)  { LCD_CMD = c; }
+static inline void lcd_dat(uint8_t d)  { LCD_DAT = d; }
+static inline void lcd_reg(uint8_t c, uint8_t d) { LCD_CMD = c; LCD_DAT = d; }
+
+/* Register-based init for the T2i's 0x47 controller (RTI FUN_0800f610 branch1).
+ * Sets the window to full-screen (regs 0x02-0x09 = 0..239 x 0..319). */
+static void panel_init(void)
 {
-	FLASH_KEYR = 0x45670123; FLASH_KEYR = 0xCDEF89AB;   /* unlock */
-	while (FLASH_SR & (1u << 16)) { }
-	FLASH_CR = (1u << 1) | (7u << 3) | (2u << 8);        /* SER, SNB=7, PSIZE=x32 */
-	FLASH_CR |= (1u << 16);                              /* STRT */
-	while (FLASH_SR & (1u << 16)) { }
-	FLASH_CR = (1u << 31);                               /* clear SER, LOCK */
+	lcd_reg(0xEA,0x00); lcd_reg(0xEB,0x20); lcd_reg(0xEC,0x0C); lcd_reg(0xED,0xC4);
+	lcd_reg(0xE8,0x40); lcd_reg(0xE9,0x38); lcd_reg(0xF1,0x01); lcd_reg(0xF2,0x10);
+	lcd_reg(0x27,0xA3);
+	lcd_reg(0x40,0x01); lcd_reg(0x41,0x07); lcd_reg(0x42,0x06); lcd_reg(0x43,0x0A);
+	lcd_reg(0x44,0x0C); lcd_reg(0x45,0x3D); lcd_reg(0x46,0x02); lcd_reg(0x47,0x43);
+	lcd_reg(0x48,0x07); lcd_reg(0x49,0x14); lcd_reg(0x4A,0x19); lcd_reg(0x4B,0x1A);
+	lcd_reg(0x4C,0x1E);
+	lcd_reg(0x50,0x02); lcd_reg(0x51,0x33); lcd_reg(0x52,0x35); lcd_reg(0x53,0x39);
+	lcd_reg(0x54,0x38); lcd_reg(0x55,0x3E); lcd_reg(0x56,0x3C); lcd_reg(0x57,0x7D);
+	lcd_reg(0x58,0x01); lcd_reg(0x59,0x05); lcd_reg(0x5A,0x06); lcd_reg(0x5B,0x0B);
+	lcd_reg(0x5C,0x18); lcd_reg(0x5D,0xFF);
+	lcd_reg(0x1B,0x1B); lcd_reg(0x1A,0x01); lcd_reg(0x24,0x45); lcd_reg(0x25,0x1F);
+	lcd_reg(0x23,0x8A); lcd_reg(0x18,0x36); lcd_reg(0x19,0x01); lcd_reg(0x01,0x00);
+	lcd_reg(0x1F,0x88); k_msleep(5); lcd_reg(0x1F,0x80); k_msleep(5);
+	lcd_reg(0x1F,0x90); k_msleep(5); lcd_reg(0x1F,0xD0); k_msleep(5);
+	lcd_reg(0x16,0x40); lcd_reg(0x17,0x05); lcd_reg(0x36,0x02);
+	lcd_reg(0x28,0x38); k_msleep(40); lcd_reg(0x28,0x3C);
+	lcd_reg(0x02,0x00); lcd_reg(0x03,0x00); lcd_reg(0x04,0x00); lcd_reg(0x05,0xEF);
+	lcd_reg(0x06,0x00); lcd_reg(0x07,0x00); lcd_reg(0x08,0x01); lcd_reg(0x09,0x3F);
 }
 
-/* ---- staging state ---- */
-static uint32_t declared, recv_cnt, stage_addr;
-static uint8_t  cksum, page[256];
-static uint16_t page_len;
-static bool     active;
-
-static void stage_flush(void)
+static void lcd_init(void)
 {
-	if (page_len) { spi_pp(stage_addr, page, page_len); stage_addr += page_len; page_len = 0; }
+	/* clocks: GPIOA,C,D,E + FSMC */
+	RCC_AHB1ENR |= (1u<<0)|(1u<<2)|(1u<<3)|(1u<<4);
+	RCC_AHB3ENR |= (1u<<0);
+
+	/* Backlight: TIM8_CH3 PWM on PC8 (AF3), config copied from RTI:
+	 * ARR=300, CCR3=271 (~90%), active-low (CC3P), MOE required (advanced timer). */
+	REG(0x40023844) |= (1u<<1);              /* RCC_APB2ENR TIM8EN */
+	pin_af(2, 8, 3);                         /* PC8 -> AF3 = TIM8_CH3 */
+	REG(0x40010428) = 99;                    /* PSC -> ~4 kHz */
+	REG(0x4001042C) = 300;                   /* ARR */
+	REG(0x4001043C) = 271;                   /* CCR3 duty */
+	REG(0x4001041C) = (6u<<4)|(1u<<3);       /* CCMR2: OC3M=PWM1, OC3PE */
+	REG(0x40010420) = (1u<<8)|(1u<<9);       /* CCER: CC3E + CC3P */
+	REG(0x40010444) = (1u<<15);              /* BDTR: MOE */
+	REG(0x40010400) = (1u<<0);               /* CR1: CEN */
+	/* keypad backlight confirmed = TIM8_CH3/PC8 (above). */
+
+	/* LCD backlight: TIM5_CH1 PWM on PA0 (AF2), the other configured PWM in RTI.
+	 * Drive it bright (90%) to make the screen clearly visible. */
+	REG(0x40023840) |= (1u<<3);              /* RCC_APB1ENR TIM5EN */
+	pin_af(0, 0, 2);                         /* PA0 -> AF2 = TIM5_CH1 */
+	REG(0x40000C28) = 119;                   /* PSC -> ~1 kHz */
+	REG(0x40000C2C) = 1000;                  /* ARR */
+	REG(0x40000C34) = 900;                   /* CCR1 = 90% */
+	REG(0x40000C18) = (6u<<4)|(1u<<3);       /* CCMR1: OC1M=PWM1, OC1PE */
+	REG(0x40000C20) = (1u<<0);               /* CCER: CC1E */
+	REG(0x40000C00) = (1u<<0);               /* CR1: CEN */
+
+	/* FSMC data + control pins -> AF12 */
+	int dpins[] = {0,1,4,5,7,13,14,15};
+	for (unsigned i=0;i<sizeof(dpins)/sizeof(dpins[0]);i++) pin_af(3, dpins[i], 12);  /* GPIOD */
+	int epins[] = {7,8,9,10};
+	for (unsigned i=0;i<sizeof(epins)/sizeof(epins[0]);i++) pin_af(4, epins[i], 12);  /* GPIOE */
+
+	/* control: PD6 = reset; backlight candidates high */
+	pin_out(3, 6, 1);   /* PD6 */
+	pin_out(0, 10, 1);  /* PA10 backlight? */
+	pin_out(2, 12, 1);  /* PC12 backlight? */
+	pin_out(2, 13, 1);  /* PC13 backlight? */
+
+	/* FSMC bank1: 8-bit NOR, WREN, FACCEN (no EXTMOD -> BTR used for r/w) */
+	FSMC_BTR1 = 0x00102D11;
+	FSMC_BCR1 = 0x00001049;
+	FSMC_BCR1 |= 0x00000001;   /* MBKEN */
+
+	/* hardware reset via PD6 */
+	pin_out(3, 6, 0); k_msleep(20);
+	pin_out(3, 6, 1); k_msleep(150);
+
+	panel_init();   /* 0x47 controller register-based init (window set full-screen) */
 }
 
-static void do_finalize(void)
+static void fill_window(void)
 {
-	stage_flush();
-	DBG(3) = (cksum == 0) ? 0x600D0000u : (0xBAD00000u | cksum);
-	if (cksum == 0) {
-		invalidate_internal_marker();
-		DBG(3) = 0x600DF00Du;
-		*(volatile uint32_t *)0xE000ED0C = 0x05FA0004u;   /* SYSRESETREQ */
+	lcd_cmd(0x22);   /* GRAM write (0x47 controller); window already full-screen */
+	static const uint16_t bars[8] = {0xF800,0x07E0,0x001F,0xFFE0,0x07FF,0xF81F,0xFFFF,0x0000};
+	for (int y = 0; y < 320; y++) {
+		uint16_t c = bars[(y / 40) & 7];
+		for (int x = 0; x < 240; x++) { lcd_dat(c >> 8); lcd_dat(c & 0xFF); }
 	}
-	active = false;
-}
-
-static void start(const uint8_t *f)
-{
-	declared = f[3] | (f[4] << 8) | (f[5] << 16) | ((uint32_t)f[6] << 24);
-	recv_cnt = 0; stage_addr = SPI_IMAGE_BASE; cksum = 0; page_len = 0; active = true;
-	DBG(1) = 0; DBG(2) = declared;
-	spi_unprotect();   /* clear power-on block protection so staging is erasable */
-	/* erase the 512 KB staging window (8 x 64 KB sectors) covering the app image */
-	for (uint32_t a = 0x01F80000u; a < 0x02000000u; a += 0x10000u) { spi_erase64k(a); }
-	DBG(0) = 0x82000000u;
-}
-
-static void data(const uint8_t *d, size_t n)
-{
-	if (!active) { return; }
-	for (size_t i = 0; i < n; i++) {
-		if (recv_cnt < declared) { cksum += d[i]; }
-		if ((stage_addr - SPI_IMAGE_BASE) + page_len < APP_REGION_SIZE) {
-			page[page_len++] = d[i];
-			if (page_len == 256) { stage_flush(); }
-		}
-		recv_cnt++;
-		if (recv_cnt == declared) { do_finalize(); return; }
-	}
-	DBG(1) = recv_cnt;
-}
-
-/* 0x83 reply — the genuine 192-byte T2i info blob captured from stock RTI,
- * so Integration Designer identifies this as a real T2i. */
-static const uint8_t info_reply[192] = {
-	0x80, 0x88, 0x88, 0x4b, 0x00, 0x01, 0x00, 0x10, 0x01, 0x27, 0x00, 0x00,
-	0x00, 0x01, 0x00, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x55, 0x6e,
-	0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x52, 0x65, 0x6d, 0x6f, 0x74,
-	0x65, 0x20, 0x54, 0x65, 0x63, 0x68, 0x6e, 0x6f, 0x6c, 0x6f, 0x67, 0x69,
-	0x65, 0x73, 0x03, 0x54, 0x80, 0x32, 0x69, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-
-/* Interrupt-driven RX into a ring buffer (poll_in isn't supported on CDC-ACM).
- * When the ring is full we stop draining the CDC FIFO so the USB OUT endpoint
- * NAKs and the host paces itself (needed during the multi-second staging erase). */
-RING_BUF_DECLARE(rx_rb, 8192);
-
-static void cdc_isr(const struct device *dev, void *ud)
-{
-	ARG_UNUSED(ud);
-	while (uart_irq_update(dev), uart_irq_rx_ready(dev)) {
-		uint8_t buf[64];
-		if (ring_buf_space_get(&rx_rb) < sizeof(buf)) {
-			uart_irq_rx_disable(dev);
-			break;
-		}
-		int n = uart_fifo_read(dev, buf, sizeof(buf));
-		if (n <= 0) { break; }
-		ring_buf_put(&rx_rb, buf, n);
-	}
-}
-
-/* read exactly n bytes from the CDC (blocking) */
-static void cdc_read(uint8_t *b, size_t n)
-{
-	size_t got = 0;
-	while (got < n) {
-		uint32_t k = ring_buf_get(&rx_rb, b + got, n - got);
-		got += k;
-		uart_irq_rx_enable(cdc);   /* re-arm if the ISR disabled it when full */
-		if (!k) { k_yield(); }
-	}
-}
-
-static void usb_bringup(void)
-{
-	(void)usbd_add_descriptor(&t2i_usbd, &t2i_lang);
-	(void)usbd_add_descriptor(&t2i_usbd, &t2i_mfr);
-	(void)usbd_add_descriptor(&t2i_usbd, &t2i_product);
-	(void)usbd_add_configuration(&t2i_usbd, USBD_SPEED_FS, &t2i_fs_config);
-	(void)usbd_register_all_classes(&t2i_usbd, USBD_SPEED_FS, 1, NULL);
-	usbd_device_set_code_triple(&t2i_usbd, USBD_SPEED_FS, USB_BCC_MISCELLANEOUS, 0x02, 0x01);
-	(void)usbd_init(&t2i_usbd);
-	(void)usbd_enable(&t2i_usbd);
 }
 
 int main(void)
 {
-	DBG(0) = 0xAA000000u;   /* receiver alive */
-	usb_bringup();
-	k_msleep(1500);
-
-	uart_irq_callback_user_data_set(cdc, cdc_isr, NULL);
-	uart_irq_rx_enable(cdc);
-
-	uint8_t frame[64];
-	while (1) {
-		cdc_read(frame, sizeof(frame));
-		switch (frame[0]) {
-		case 0x83:
-			for (size_t i = 0; i < sizeof(info_reply); i++) { uart_poll_out(cdc, info_reply[i]); }
-			DBG(0) = 0x83000000u;
-			break;
-		case 0x82:
-			start(frame);
-			break;
-		case 0x80:
-			data(frame + 1, 63);
-			break;
-		default:
-			break;
-		}
-	}
+	*(volatile uint32_t *)0x2001FF00 = 0x1CD00001;   /* marker: reached main */
+	lcd_init();
+	*(volatile uint32_t *)0x2001FF00 = 0x1CD00002;   /* marker: init done */
+	fill_window();
+	*(volatile uint32_t *)0x2001FF00 = 0x1CD00003;   /* marker: filled */
+	while (1) { k_msleep(1000); }
 	return 0;
 }
