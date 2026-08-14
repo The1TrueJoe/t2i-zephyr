@@ -24,16 +24,32 @@ RTI's exact config; a backlight boost at the wrong duty can over-volt the LEDs.*
 
 | Pin | Function |
 |---|---|
-| PA4 | DAC_OUT1 — likely **speaker** audio (or ADC) |
 | PA7 | ADC — sensor (light/battery?) |
 | PB1 | ADC — sensor |
+
+(PA4 was previously guessed as DAC/speaker — it is actually a **touchscreen**
+electrode, see below. The speaker pin is currently unidentified.)
+
+## Touchscreen — 4-wire resistive (reversed)
+
+Read directly by the STM32 (no touch controller IC). Driver = RTI `FUN_08015928`:
+it reconfigures the four electrode pins between push-pull drive and analog, then
+reads the perpendicular plane via **ADC2**.
+
+| Pin | Role |
+|---|---|
+| PA3 / PA4 / PA5 / PA6 | 4-wire resistive electrodes (X+/X−/Y+/Y−), ADC2 IN3–IN6 |
+
+Read sequence: energize one axis (drive its two electrodes as GPIO high/low),
+set the other two to analog, ADC2-sample to get one coordinate; repeat swapped
+for the other coordinate. Touch/no-touch from the pressure (Z) or sample validity.
 
 ## Timer PWMs (match RTI config exactly)
 
 | Pin | Timer | Function |
 |---|---|---|
 | PC8 | TIM8_CH3 | **Keypad backlight** ✅ confirmed (ARR=300, CCR3~79, active-low) |
-| PA1 | TIM2_CH2 | **LCD backlight** ✅ confirmed — PWM-dimming input to a backlight driver IC. PSC=9, ARR=3000 (~4 kHz), PWM mode 2, active-low. CCR2 = brightness: 60≈off (RTI idle), 1500=50%, 3000=full. Driver regulates LED current → raising duty only brightens, cannot over-volt. |
+| PA1 | TIM2_CH2 | **LCD backlight** ✅ confirmed — PWM-dimming input to a backlight driver IC, PWM mode 2, active-low. CCR2/ARR = brightness (driver regulates LED current → duty only changes brightness, cannot over-volt). We run **~30 kHz** (ARR=2000, CCR2=1000=50%) to stay inaudible; the ~2 kHz we first read was RTI's idle/dimmed register state and made the boost whine. |
 | PA0 | TIM5_CH1 | PWM — purpose TBD (driving it lit nothing) |
 
 ## LCD (screen)
@@ -72,7 +88,9 @@ reversed from RTI (some inferred):
 | PB0 | Tied to a PWM/frequency routine alongside PB14 — RF modulation / tone (radio desoldered → inert) |
 | PC13 | Peripheral **chip-select** (pulsed around a bus transfer) |
 | PC12 | Control/enable line (peripheral) |
-| PA6, PA10 | Control/enable lines (exact function not individually pinned; safe) |
+| PA10 | Control/enable line (exact function not individually pinned; safe) |
+
+(PA6 was previously listed here — it is actually a **touchscreen electrode**, see above.)
 
 The ZigBee (EM250) / RF (CC1150) radio was **desoldered** on the bench unit, so its
 control pins (PB14/PB0, and USART3 if used for the radio) are inert here.
