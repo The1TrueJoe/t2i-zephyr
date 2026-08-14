@@ -1,0 +1,16 @@
+description: |
+  RTI T2i panel — Himax HX8347 controller on an 8-bit FSMC parallel bus.
+  The driver drives the FSMC/GPIO/backlight directly (bare-metal), so this
+  node is just a handle for the Zephyr display API / LVGL.
+
+compatible: "rti,hx8347-fsmc"
+
+include: [base.yaml]
+
+properties:
+  width:
+    type: int
+    default: 240
+  height:
+    type: int
+    default: 320

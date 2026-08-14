@@ -1,2 +1,21 @@
-/* LCD test needs no extra devicetree — the driver is bare-metal (FSMC). */
-/ { };
+/* HX8347 LCD driver (bare-metal FSMC) exposed to Zephyr/LVGL as the display,
+ * plus I2C2 for the on-board ST accelerometer (slave 0x18). */
+/ {
+	chosen {
+		zephyr,display = &hx8347;
+	};
+
+	hx8347: hx8347 {
+		compatible = "rti,hx8347-fsmc";
+		width = <240>;
+		height = <320>;
+		status = "okay";
+	};
+};
+
+&i2c2 {
+	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb11>;
+	pinctrl-names = "default";
+	clock-frequency = <100000>;
+	status = "okay";
+};
