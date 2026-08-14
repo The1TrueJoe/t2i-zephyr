@@ -31,6 +31,12 @@ int main(void)
 		return 0;
 	}
 	display_blanking_off(disp);
+
+	/* Boot flash-window: stay fully awake ~3s so SWD/st-flash can always catch
+	 * this CPU. NRST is dead on this unit, so a sleeping (WFI) CPU can't be
+	 * grabbed to flash — keeping it awake makes every future flash trivial. */
+	for (int i = 0; i < 60; i++) { k_busy_wait(50000); }
+
 	touch_init();
 	beep_init();
 	beep_test();   /* two beeps at boot — tells us if the speaker path works */
@@ -86,7 +92,9 @@ int main(void)
 		was_pressed = pressed;
 
 		lv_timer_handler();
-		k_msleep(20);
+		/* pace without sleeping — never WFI, so the CPU stays SWD-catchable */
+		k_busy_wait(8000);
+		k_yield();
 	}
 	return 0;
 }
