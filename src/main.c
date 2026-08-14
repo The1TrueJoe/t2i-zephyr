@@ -13,17 +13,16 @@
 
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
-/* Provisional raw-ADC -> screen calibration (240x320). Tune the sign/scale
- * after seeing raw corner values (stored at 0x2001FF30/34). */
-#define RAW_MIN 200
-#define RAW_MAX 3900
-static int map_axis(int raw, int screen)
-{
-	int v = (raw - RAW_MIN) * screen / (RAW_MAX - RAW_MIN);
-	if (v < 0) v = 0;
-	if (v > screen - 1) v = screen - 1;
-	return v;
-}
+/* Raw-ADC -> screen calibration, measured on-device (drag all four corners).
+ * X raw 2700..3827 -> 0..239 ; Y raw 2315..3535 -> 0..319. Flip a MIN/MAX pair
+ * if that axis comes out mirrored. */
+#define X_MIN 2700
+#define X_MAX 3827
+#define Y_MIN 2315
+#define Y_MAX 3535
+static int clampi(int v, int hi) { return v < 0 ? 0 : (v > hi ? hi : v); }
+static int map_x(int raw) { return clampi((raw - X_MIN) * 240 / (X_MAX - X_MIN), 239); }
+static int map_y(int raw) { return clampi((raw - Y_MIN) * 320 / (Y_MAX - Y_MIN), 319); }
 
 int main(void)
 {
@@ -71,8 +70,8 @@ int main(void)
 			MARK(0x40, (uint16_t)minX | ((uint32_t)(uint16_t)maxX << 16));
 			MARK(0x44, (uint16_t)minY | ((uint32_t)(uint16_t)maxY << 16));
 			MARK(0x48, ++presses);
-			int sx = map_axis(rx, 240);
-			int sy = map_axis(ry, 320);
+			int sx = map_x(rx);
+			int sy = map_y(ry);
 			lv_obj_set_pos(pin, sx - 9, sy - 9);
 			lv_obj_clear_flag(pin, LV_OBJ_FLAG_HIDDEN);
 			char b[48];
