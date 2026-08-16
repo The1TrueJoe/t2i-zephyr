@@ -22,6 +22,19 @@
 #define ICSR_PENDSTCLR (1u << 25)   /* clear pending SysTick */
 #define ICSR_PENDSVCLR (1u << 27)   /* clear pending PendSV  */
 
+/* Keep the debug port clocked through Sleep/Stop/Standby.
+ *
+ * WFI puts the core in Sleep and STOP gates almost everything — in both cases
+ * the debug port loses its clock and SWD drops the target ("Failed to enter SWD
+ * mode"), which on a unit with a dead NRST means the only way back in is the
+ * boot flash-window. Setting these three bits costs a little sleep current but
+ * keeps st-flash/gdb able to attach at any time, which is the difference
+ * between a bad sleep bug being debuggable and being a power-cycle hunt.
+ * Clear DBGMCU_ENABLE for a production/battery build. */
+#define DBGMCU_ENABLE 1
+#define DBGMCU_CR    (*(volatile unsigned int *)0xE0042004)
+#define DBGMCU_SLEEP_STOP_STANDBY 0x7u   /* DBG_SLEEP | DBG_STOP | DBG_STANDBY */
+
 #define RCC_AHB2ENR  (*(volatile unsigned int *)0x40023834)
 #define RCC_AHB2RSTR (*(volatile unsigned int *)0x40023814)
 #define RCC_OTGFS_BIT (1u << 7)                             /* OTGFSEN / OTGFSRST */
@@ -34,6 +47,10 @@ void soc_reset_hook(void)
 {
 	BOOTMARK(0) = 0xB0070001U;    /* reached soc_reset_hook entry */
 	SCB_VTOR = 0x08004000U;      /* our vector table, right now */
+
+#if DBGMCU_ENABLE
+	DBGMCU_CR |= DBGMCU_SLEEP_STOP_STANDBY;
+#endif
 
 	/* The RTI bootloader uses SysTick and hands off with it running and/or a
 	 * SysTick exception pending. SysTick/PendSV are system exceptions, so the

@@ -107,13 +107,18 @@ static void lcd_hw_init(void)
 		     | RCC_AHB1ENR_GPIO(GPIO_PORT_D) | RCC_AHB1ENR_GPIO(GPIO_PORT_E);
 	RCC_AHB3ENR |= (1u << 0);                /* FSMC clock */
 
+	/* Kill the LCD backlight before anything else: the RTI bootloader hands off
+	 * with TIM2 already driving it, so the panel can be lit (showing power-up
+	 * noise) from the instant we start. Turning it off first, and only raising
+	 * it once the app has drawn a frame, is what removes the RGB grid. */
+	backlight_set(0);
+
 	/* PC12 = backlight/boost rail enable. Stock drives it high in FUN_08021354
 	 * (output PP + pull-up). Without it both backlights stay dark even though
 	 * the PWMs run and the panel logic answers on the FSMC bus. */
 	pin_out(GPIO_PORT_C, 12, 1);
 
 	keypad_backlight_on();
-	backlight_set(50);                       /* LCD backlight ~50% */
 
 	int dpins[] = {0,1,4,5,7,13,14,15};
 	for (unsigned i = 0; i < sizeof(dpins)/sizeof(dpins[0]); i++) pin_af(GPIO_PORT_D, dpins[i], 12);
@@ -130,6 +135,17 @@ static void lcd_hw_init(void)
 	pin_out(GPIO_PORT_D, 6, 1); k_msleep(150);
 
 	panel_init();
+
+	/* Clear GRAM to black. The panel powers up holding noise, and the RTI
+	 * bootloader may already have raised the backlight before we got here — so
+	 * blanking alone is not enough to guarantee nothing is ever displayed.
+	 * Wiping the framebuffer means there is simply nothing to show. */
+	lcd_window(0, 0, PANEL_W - 1, PANEL_H - 1);
+	lcd_cmd(0x22);
+	for (uint32_t i = 0; i < (uint32_t)PANEL_W * PANEL_H; i++) {
+		lcd_dat(0x00);
+		lcd_dat(0x00);
+	}
 }
 
 static int hx8347_write(const struct device *dev, uint16_t x, uint16_t y,
@@ -167,6 +183,16 @@ static void hx8347_get_caps(const struct device *dev, struct display_capabilitie
 static int hx8347_blanking_off(const struct device *dev) { ARG_UNUSED(dev); backlight_set(50); return 0; }
 static int hx8347_blanking_on(const struct device *dev)  { ARG_UNUSED(dev); backlight_set(0);  return 0; }
 
+/* Backlight level, 0..255 -> 0..100% duty on TIM2_CH2. Lets the app dim rather
+ * than only blank, which is both a real feature for a battery remote and the
+ * only way to observe the sleep path without a working debug probe. */
+static int hx8347_set_brightness(const struct device *dev, uint8_t brightness)
+{
+	ARG_UNUSED(dev);
+	backlight_set((int)brightness * 100 / 255);
+	return 0;
+}
+
 static int hx8347_set_pixel_format(const struct device *dev, enum display_pixel_format pf)
 {
 	ARG_UNUSED(dev);
@@ -183,6 +209,7 @@ static int hx8347_init(const struct device *dev)
 static const struct display_driver_api hx8347_api = {
 	.blanking_on = hx8347_blanking_on,
 	.blanking_off = hx8347_blanking_off,
+	.set_brightness = hx8347_set_brightness,
 	.write = hx8347_write,
 	.get_capabilities = hx8347_get_caps,
 	.set_pixel_format = hx8347_set_pixel_format,

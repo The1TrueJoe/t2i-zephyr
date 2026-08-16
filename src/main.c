@@ -14,8 +14,22 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "touch.h"
+#include "accel.h"
+#include "keypad.h"
+#include "wake.h"
 
 extern const lv_image_dsc_t juno_logo;   /* src/juno_logo.c */
+
+/* Blank the screen after this long with no activity. Any button press, touch or
+ * motion resets the countdown. */
+#define SLEEP_AFTER_MS 30000
+
+/* Backlight levels (0..255). Sleep dims rather than blanking outright while we
+ * are still proving the wake path: a faintly lit screen tells you whether the
+ * loop is alive and whether a keypress restores brightness. Set BRIGHT_ASLEEP
+ * to 0 for real power behaviour once wake is trusted. */
+#define BRIGHT_AWAKE  128
+#define BRIGHT_ASLEEP 8
 
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
@@ -75,26 +89,17 @@ static void touch_lv_read(lv_indev_t *indev, lv_indev_data_t *data)
 	data->state = LV_INDEV_STATE_PRESSED;
 }
 
-static uint32_t taps;
-
-static void btn_clicked(lv_event_t *e)
-{
-	lv_obj_t *label = lv_event_get_user_data(e);
-	char b[24];
-
-	snprintf(b, sizeof(b), "taps: %u", ++taps);
-	lv_label_set_text(label, b);
-	MARK(0x48, taps);
-	beep_click();
-}
-
 int main(void)
 {
 	const struct device *disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 	if (!device_is_ready(disp)) {
 		return 0;
 	}
-	display_blanking_off(disp);
+	/* Leave the backlight OFF for now. The panel powers up with whatever noise
+	 * is in GRAM, and lighting it before the first frame is drawn shows an RGB
+	 * grid of uninitialised memory. Blanking stays on until the splash has been
+	 * rendered below. */
+	display_blanking_on(disp);
 	MARK(0x00, 1);   /* stage marker — read 0x2001FF00 over SWD to see how far boot got */
 
 	/* Splash: the Juno logo on black for the duration of the boot flash-window.
@@ -108,14 +113,26 @@ int main(void)
 	lv_image_set_src(logo, &juno_logo);
 	lv_obj_center(logo);
 
+	/* Draw the whole first frame (black background + logo) before any light
+	 * reaches the panel, then switch the backlight on. */
+	lv_refr_now(NULL);
+	display_blanking_off(disp);
+	display_set_brightness(disp, BRIGHT_AWAKE);
+
 	for (int i = 0; i < 60; i++) {
 		lv_timer_handler();
 		k_busy_wait(50000);
 	}
 	lv_obj_delete(logo);
 
+	/* The splash left the screen black; keep it (easier on the eyes than a white
+	 * panel) but make text white so the readouts are legible. Text colour is an
+	 * inherited style, so setting it on the screen covers every label. */
+	lv_obj_set_style_text_color(scr, lv_color_white(), 0);
+
 	touch_init();
 	beep_init();
+	keypad_init();
 	MARK(0x00, 2);
 	beep_test();   /* two beeps at boot — tells us if the speaker path works */
 	MARK(0x00, 3);
@@ -128,42 +145,107 @@ int main(void)
 	MARK(0x00, 5);
 
 	lv_obj_t *title = lv_label_create(scr);
-	lv_label_set_text(title, "Tap the button");
+	lv_label_set_text(title, "T2i bring-up");
 	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
-	lv_obj_t *count = lv_label_create(scr);
-	lv_label_set_text(count, "taps: 0");
-	lv_obj_align(count, LV_ALIGN_TOP_MID, 0, 28);
-
 	MARK(0x00, 6);
-	lv_obj_t *btn = lv_button_create(scr);
-	lv_obj_set_size(btn, 140, 70);
-	lv_obj_center(btn);
-	lv_obj_add_event_cb(btn, btn_clicked, LV_EVENT_CLICKED, count);
-	lv_obj_t *btn_label = lv_label_create(btn);
-	lv_label_set_text(btn_label, "TAP ME");
-	lv_obj_center(btn_label);
 
-	/* calibration readout — drag the corners and copy these into X_LO..Y_HI */
+	/* live readout: touch, accelerometer, keypad */
 	lv_obj_t *info = lv_label_create(scr);
-	lv_label_set_text(info, "raw: --");
-	lv_obj_align(info, LV_ALIGN_BOTTOM_MID, 0, -6);
-	MARK(0x00, 7);
+	lv_label_set_text(info, "starting...");
+	lv_obj_align(info, LV_ALIGN_TOP_LEFT, 6, 40);
 
-	uint32_t beat = 0;
+	bool accel_ok = accel_init();
+	bool wake_ok = wake_init();
+	MARK(0x00, (accel_ok ? 7 : 0x70) | (wake_ok ? 0 : 0x700));   /* 0x70 = no accel, 0x700 = no wake IRQ */
+
+	uint32_t beat = 0, motion_events = 0, src_seen = 0;
+	const char *woke_by = "-";
+	uint32_t wakes = 0;
+	bool asleep = false;
+	int64_t last_active = k_uptime_get();
+
 	while (1) {
-		char b[64];
+		char b[128];
 		MARK(0x04, ++beat);   /* heartbeat — proves the render loop is alive */
-		snprintf(b, sizeof(b), "%s %d,%d z%d\nX %d-%d  Y %d-%d",
-			 last_pressed ? "raw" : "up ", last_rx, last_ry, last_z,
-			 minX, maxX, minY, maxY);
+
+		int krow = -1, kcol = -1;
+		uint8_t key = keypad_scan(&krow, &kcol);
+		bool motion = accel_motion();
+		if (motion) {
+			motion_events++;
+		}
+		/* Sticky diagnostics: a motion event is easy to miss when polling RAM
+		 * over SWD, because our own read clears the latch within ~10ms. Keep a
+		 * count, and OR together every INT1_SRC bit ever seen. */
+		src_seen |= accel_last_src();
+		MARK(0x18, motion_events);
+		MARK(0x1C, src_seen);
+
+		/* While asleep lv_timer_handler never runs, so the LVGL read callback
+		 * never fires and last_pressed goes stale — read the panel directly
+		 * instead. That was why touch could not wake it. */
+		bool touched = asleep ? touch_read(NULL, NULL, NULL) : (last_pressed != 0);
+		bool active = touched || motion || key != KEY_NONE;
+
+		/* wake-source diagnostics: bit0 touch, bit1 motion, bit2 key,
+		 * byte1 = raw INT1_SRC, byte2 = row bits seen by the last scan */
+		MARK(0x10, (touched ? 1u : 0u) | (motion ? 2u : 0u) |
+			   (key != KEY_NONE ? 4u : 0u) |
+			   ((uint32_t)accel_last_src() << 8) |
+			   ((uint32_t)keypad_rows() << 16));
+
+		if (active) {
+			last_active = k_uptime_get();
+		}
+
+		if (asleep) {
+			if (active) {
+				woke_by = touched ? "touch" : (key != KEY_NONE ? "KEY" : "motion");
+				wakes++;
+				display_set_brightness(disp, BRIGHT_AWAKE);
+				asleep = false;
+				MARK(0x08, 0);
+			}
+			/* Falls through to the wait below, which parks the core in WFI
+			 * until a keypad row or the accelerometer raises an EXTI edge. */
+		} else if (k_uptime_get() - last_active > SLEEP_AFTER_MS) {
+			display_set_brightness(disp, BRIGHT_ASLEEP);
+			asleep = true;
+			MARK(0x08, 1);
+		}
+
+		if (asleep) {
+			MARK(0x20, wake_count());
+			wake_wait(K_MSEC(250));
+			continue;   /* nothing to redraw while dimmed */
+		}
+
+		int ax = 0, ay = 0, az = 0;
+		accel_read(&ax, &ay, &az);
+		MARK(0x0C, (uint32_t)key);
+		snprintf(b, sizeof(b),
+			 "touch %s\n raw %d,%d z%d\n X %d-%d\n Y %d-%d\n\n"
+			 "accel %s\n x%d y%d z%d\n\nkey %d  r%d c%d\n"
+			 "rows 0x%02x\n\n%s  wakes %u\nirqs %u  motions %u\nwoke by %s",
+			 last_pressed ? "DOWN" : "up", last_rx, last_ry, last_z,
+			 minX, maxX, minY, maxY,
+			 accel_ok ? "ok" : "NOT FOUND", ax, ay, az,
+			 key == KEY_NONE ? -1 : key, krow, kcol, keypad_rows(),
+			 asleep ? "ASLEEP" : "awake", wakes,
+			 wake_count(), motion_events, woke_by);
 		lv_label_set_text(info, b);
 		MARK(0x34, last_pressed);
 
 		lv_timer_handler();
-		/* pace without sleeping — never WFI, so the CPU stays SWD-catchable */
-		k_busy_wait(8000);
-		k_yield();
+		if (asleep) {
+			/* block in WFI until an EXTI edge or the poll timeout */
+			MARK(0x20, wake_count());
+			wake_wait(K_MSEC(250));
+		} else {
+			k_busy_wait(8000);
+			k_yield();
+		}
 	}
 	return 0;
 }

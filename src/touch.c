@@ -105,9 +105,12 @@ int touch_read(int *x, int *y, int *z)
 	}
 
 	/* drive the X plate, sample Y+ (ch5) — stock FUN_08015928 */
-	*x = read_axis(XP, XM, YP, YM);
+	int xv = read_axis(XP, XM, YP, YM);
 	/* drive the Y plate, sample X+ (ch4) — stock FUN_08015a0c */
-	*y = read_axis(YP, YM, XP, XM);
+	int yv = read_axis(YP, YM, XP, XM);
+
+	if (x) { *x = xv; }
+	if (y) { *y = yv; }
 	return 1;
 }
 
