@@ -180,8 +180,33 @@ static void hx8347_get_caps(const struct device *dev, struct display_capabilitie
 	caps->current_orientation = DISPLAY_ORIENTATION_NORMAL;
 }
 
-static int hx8347_blanking_off(const struct device *dev) { ARG_UNUSED(dev); backlight_set(50); return 0; }
-static int hx8347_blanking_on(const struct device *dev)  { ARG_UNUSED(dev); backlight_set(0);  return 0; }
+/* Blanking parks PA1 as a plain GPIO driven low, rather than leaving TIM2
+ * running at 0% duty.
+ *
+ * Two reasons. First, a permanently-low *PWM* input makes the backlight driver
+ * latch into shutdown such that restoring duty alone does not bring the light
+ * back (observed: dim-to-3% recovers, 0% does not) — reconfiguring the pin from
+ * scratch on the way out avoids that. Second, TIM2 stops in STOP mode, so a pin
+ * left under timer control holds whatever level it happened to stop at; driving
+ * it as GPIO makes "off" deterministic while the CPU is stopped.
+ *
+ * Note we do NOT touch PC12 here: despite being the backlight/boost enable, it
+ * is a shared rail — dropping it lights the low-battery indicator and cuts the
+ * panel's logic supply, so the HX8347 loses its init and no amount of backlight
+ * brings the image back. */
+static int hx8347_blanking_off(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	backlight_set(50);               /* re-establishes AF + PWM on PA1 */
+	return 0;
+}
+
+static int hx8347_blanking_on(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	pin_out(GPIO_PORT_A, 1, 0);      /* backlight off, and stays off in STOP */
+	return 0;
+}
 
 /* Backlight level, 0..255 -> 0..100% duty on TIM2_CH2. Lets the app dim rather
  * than only blank, which is both a real feature for a battery remote and the

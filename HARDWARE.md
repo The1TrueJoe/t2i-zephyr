@@ -102,7 +102,7 @@ reversed from RTI (some inferred):
 | PB14 | Write-only **SPI2 chip-select** — the CC1150 433 MHz RF module (**desoldered** on the bench unit → inert) |
 | PB0 | Tied to a PWM/frequency routine alongside PB14 — RF modulation / tone (radio desoldered → inert) |
 | PC13 | Peripheral **chip-select** (pulsed around a bus transfer) |
-| PC12 | **Backlight / LED boost rail enable** — must be driven HIGH or *both* backlights stay dark even though TIM2/TIM8 run correctly and the panel answers on the FSMC bus. Stock drives it in `FUN_08021354` (output PP + pull-up). It latches across warm resets, so a board that lost this pin only goes dark after a true power removal — which makes it look like a firmware regression. Set in `lcd_hw_init()`. |
+| PC12 | **Shared power-rail enable — drive HIGH and leave it there.** Must be high or *both* backlights stay dark even though TIM2/TIM8 run correctly and the panel answers on the FSMC bus. Stock drives it in `FUN_08021354` (output PP + pull-up). It latches across warm resets, so a board that lost this pin only goes dark after a true power removal — which makes it look like a firmware regression. **Do not drop it to save power:** it feeds more than the backlight. Taking it low lights the front-panel **low-battery indicator** and removes the panel's logic supply, so the HX8347 loses its initialisation and the image cannot be restored by re-enabling the backlight alone (it would need a full panel re-init). Set once in `lcd_hw_init()`. |
 | PA10 | Control/enable line (exact function not individually pinned; safe) |
 
 (PA6 was previously listed here — it is actually a **touchscreen electrode**, see above.)

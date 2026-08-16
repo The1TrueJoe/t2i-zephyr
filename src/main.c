@@ -17,6 +17,7 @@
 #include "accel.h"
 #include "keypad.h"
 #include "wake.h"
+#include "lowpower.h"
 
 extern const lv_image_dsc_t juno_logo;   /* src/juno_logo.c */
 
@@ -30,6 +31,24 @@ extern const lv_image_dsc_t juno_logo;   /* src/juno_logo.c */
  * to 0 for real power behaviour once wake is trusted. */
 #define BRIGHT_AWAKE  128
 #define BRIGHT_ASLEEP 8
+
+/* STM32 STOP mode while asleep: ~0.5mA instead of ~15-25mA idling in WFI.
+ * Set to 0 to fall back to plain WFI if STOP ever misbehaves. */
+/* Default OFF for development: a CPU in STOP has proven not to be attachable
+ * over SWD on this board even with DBGMCU DBG_STOP set, and with NRST dead that
+ * means a power-cycle every flash. Plain WFI sleep *is* attachable (verified by
+ * reading RAM markers while asleep). Turn this on deliberately for power
+ * measurement runs, ideally with recovery mode (hold a key at boot) available.
+ */
+#define USE_STOP_MODE 0
+/* Bring-up: leave the backlight alone across sleep so the screen keeps showing
+ * its last frame. Every STOP attempt so far confounded "did the CPU wake?" with
+ * "did the backlight come back?" — this separates them. Set to 0 once STOP wake
+ * is trusted, and sleep will dim as before. */
+#define SLEEP_KEEP_BACKLIGHT 1
+/* Stay out of STOP for this long after boot so the flash-window is always
+ * catchable over SWD (NRST is dead on this unit). */
+#define STOP_NOT_BEFORE_MS 10000
 
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
@@ -155,6 +174,13 @@ int main(void)
 	lv_label_set_text(info, "starting...");
 	lv_obj_align(info, LV_ALIGN_TOP_LEFT, 6, 40);
 
+	/* Recovery mode: hold any key while powering on and the remote never sleeps.
+	 * A sleeping CPU (especially in STOP) can be impossible to attach to, and
+	 * with NRST dead that leaves only the boot flash-window — which is a race.
+	 * This gives a deterministic, always-flashable state with no guesswork:
+	 * hold a button, power on, flash at leisure. */
+	bool no_sleep = keypad_any();
+
 	bool accel_ok = accel_init();
 	bool wake_ok = wake_init();
 	MARK(0x00, (accel_ok ? 7 : 0x70) | (wake_ok ? 0 : 0x700));   /* 0x70 = no accel, 0x700 = no wake IRQ */
@@ -203,22 +229,36 @@ int main(void)
 			if (active) {
 				woke_by = touched ? "touch" : (key != KEY_NONE ? "KEY" : "motion");
 				wakes++;
-				display_set_brightness(disp, BRIGHT_AWAKE);
+				if (!SLEEP_KEEP_BACKLIGHT) {
+					display_set_brightness(disp, BRIGHT_AWAKE);
+				}
 				asleep = false;
 				MARK(0x08, 0);
 			}
 			/* Falls through to the wait below, which parks the core in WFI
 			 * until a keypad row or the accelerometer raises an EXTI edge. */
-		} else if (k_uptime_get() - last_active > SLEEP_AFTER_MS) {
-			display_set_brightness(disp, BRIGHT_ASLEEP);
+		} else if (!no_sleep && k_uptime_get() - last_active > SLEEP_AFTER_MS) {
+			if (!SLEEP_KEEP_BACKLIGHT) {
+				display_set_brightness(disp, BRIGHT_ASLEEP);
+			}
 			asleep = true;
 			MARK(0x08, 1);
 		}
 
 		if (asleep) {
 			MARK(0x20, wake_count());
+#if USE_STOP_MODE
+			/* Never STOP inside the boot flash-window: with NRST dead, that
+			 * window is the guaranteed way to catch this CPU for flashing. */
+			if (k_uptime_get() > STOP_NOT_BEFORE_MS) {
+				lowpower_stop();
+			} else {
+				wake_wait(K_MSEC(250));
+			}
+#else
 			wake_wait(K_MSEC(250));
-			continue;   /* nothing to redraw while dimmed */
+#endif
+			continue;   /* nothing to redraw with the screen off */
 		}
 
 		int ax = 0, ay = 0, az = 0;
@@ -227,13 +267,18 @@ int main(void)
 		snprintf(b, sizeof(b),
 			 "touch %s\n raw %d,%d z%d\n X %d-%d\n Y %d-%d\n\n"
 			 "accel %s\n x%d y%d z%d\n\nkey %d  r%d c%d\n"
-			 "rows 0x%02x\n\n%s  wakes %u\nirqs %u  motions %u\nwoke by %s",
+			 "rows 0x%02x\n\n%s  wakes %u\nirqs %u  motions %u\nwoke by %s\n"
+			 "stops %u  clk %s%s",
 			 last_pressed ? "DOWN" : "up", last_rx, last_ry, last_z,
 			 minX, maxX, minY, maxY,
 			 accel_ok ? "ok" : "NOT FOUND", ax, ay, az,
 			 key == KEY_NONE ? -1 : key, krow, kcol, keypad_rows(),
 			 asleep ? "ASLEEP" : "awake", wakes,
-			 wake_count(), motion_events, woke_by);
+			 wake_count(), motion_events, woke_by,
+			 lowpower_stop_count(),
+			 lowpower_sysclk_src() == 2 ? "PLL120" :
+			 (lowpower_sysclk_src() == 1 ? "HSE" : "HSI16"),
+			 no_sleep ? "\nRECOVERY (no sleep)" : "");
 		lv_label_set_text(info, b);
 		MARK(0x34, last_pressed);
 
@@ -243,8 +288,13 @@ int main(void)
 			MARK(0x20, wake_count());
 			wake_wait(K_MSEC(250));
 		} else {
-			k_busy_wait(8000);
-			k_yield();
+			/* Idle between frames instead of spinning at 120 MHz. The old
+			 * busy-wait was there to keep the CPU SWD-catchable, but that
+			 * predates DBGMCU_CR (reset_hook.c) keeping the debug port
+			 * clocked through sleep — idling is now both lower power and
+			 * *more* reliable to attach to, since the core is not hammering
+			 * the FSMC bus when the probe tries to halt it. */
+			k_msleep(10);
 		}
 	}
 	return 0;
