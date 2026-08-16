@@ -38,11 +38,26 @@ reads the perpendicular plane via **ADC2**.
 
 | Pin | Role |
 |---|---|
-| PA3 / PA4 / PA5 / PA6 | 4-wire resistive electrodes (X+/X−/Y+/Y−), ADC2 IN3–IN6 |
+| PA3 | X− (ADC2 IN3) |
+| PA4 | X+ (ADC2 IN4) |
+| PA5 | Y+ (ADC2 IN5) |
+| PA6 | Y− (ADC2 IN6) |
+
+**The plates are PA3+PA4 and PA5+PA6** — pairing them across plates (PA3+PA5)
+drives a diagonal and yields a squashed, useless range. Confirmed from the stock
+`GPIO_Init` calls:
+
+| | `FUN_08015928` (X) | `FUN_08015a0c` (Y) |
+|---|---|---|
+| driven high | PA4 | PA5 |
+| driven low | PA3 (out, pull-down) | PA6 (out, pull-down) |
+| left analog | PA6 | PA3 |
+| ADC2 channel sampled | 5 (PA5) | 4 (PA4) |
 
 Read sequence: energize one axis (drive its two electrodes as GPIO high/low),
-set the other two to analog, ADC2-sample to get one coordinate; repeat swapped
-for the other coordinate. Touch/no-touch from the pressure (Z) or sample validity.
+set the other two to analog, ADC2-sample the perpendicular wire to get one
+coordinate; repeat swapped for the other coordinate. Touch/no-touch: drive X−
+low with a pull-up on Y+ and sense Y+ (cross-plate, so a press shorts it low).
 
 ## Timer PWMs (match RTI config exactly)
 
@@ -87,7 +102,7 @@ reversed from RTI (some inferred):
 | PB14 | Write-only **SPI2 chip-select** — the CC1150 433 MHz RF module (**desoldered** on the bench unit → inert) |
 | PB0 | Tied to a PWM/frequency routine alongside PB14 — RF modulation / tone (radio desoldered → inert) |
 | PC13 | Peripheral **chip-select** (pulsed around a bus transfer) |
-| PC12 | Control/enable line (peripheral) |
+| PC12 | **Backlight / LED boost rail enable** — must be driven HIGH or *both* backlights stay dark even though TIM2/TIM8 run correctly and the panel answers on the FSMC bus. Stock drives it in `FUN_08021354` (output PP + pull-up). It latches across warm resets, so a board that lost this pin only goes dark after a true power removal — which makes it look like a firmware regression. Set in `lcd_hw_init()`. |
 | PA10 | Control/enable line (exact function not individually pinned; safe) |
 
 (PA6 was previously listed here — it is actually a **touchscreen electrode**, see above.)

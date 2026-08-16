@@ -107,6 +107,11 @@ static void lcd_hw_init(void)
 		     | RCC_AHB1ENR_GPIO(GPIO_PORT_D) | RCC_AHB1ENR_GPIO(GPIO_PORT_E);
 	RCC_AHB3ENR |= (1u << 0);                /* FSMC clock */
 
+	/* PC12 = backlight/boost rail enable. Stock drives it high in FUN_08021354
+	 * (output PP + pull-up). Without it both backlights stay dark even though
+	 * the PWMs run and the panel logic answers on the FSMC bus. */
+	pin_out(GPIO_PORT_C, 12, 1);
+
 	keypad_backlight_on();
 	backlight_set(50);                       /* LCD backlight ~50% */
 

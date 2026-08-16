@@ -2,7 +2,10 @@
  * 4-wire resistive touchscreen + beeper for the RTI T2i, reverse-engineered
  * from stock RTI (touch driver FUN_08015928, tone FUN_08009a78).
  *
- *   Touch electrodes: PA3=X+  PA4=Y+  PA5=X-  PA6=Y-  (ADC2 IN3..IN6)
+ *   Touch electrodes (ADC2 IN3..IN6), plate pairing per stock:
+ *     X plate = PA4 (X+) / PA3 (X-)      Y plate = PA5 (Y+) / PA6 (Y-)
+ *   Stock FUN_08015928: PA4 high, PA3 low, PA6 analog, sample ch5 (PA5).
+ *   Stock FUN_08015a0c: PA5 high, PA6 low, PA3 analog, sample ch4 (PA4).
  *   Beeper: PB0 = TIM3_CH3 (AF2), PWM tone.
  *
  * Read strategy: PENIRQ-style detect (drive X- low, pull-up Y+, sense Y+ IDR),
@@ -12,10 +15,15 @@
 #include "t2i_regs.h"
 #include "touch.h"
 
+/* Press threshold on the Z (pressure) reading, 0..4095. Lower = more sensitive.
+ * Tune against the "z" figure shown on the demo screen: pick a value comfortably
+ * above what an untouched panel reads and below a light fingertip press. */
+#define TOUCH_Z_MIN 12
+
 #define A GPIO_PORT_A
-#define XP 3   /* PA3 = X+  (ADC2 IN3) */
-#define YP 4   /* PA4 = Y+  (ADC2 IN4) */
-#define XM 5   /* PA5 = X-  (ADC2 IN5) */
+#define XM 3   /* PA3 = X-  (ADC2 IN3) */
+#define XP 4   /* PA4 = X+  (ADC2 IN4) */
+#define YP 5   /* PA5 = Y+  (ADC2 IN5) */
 #define YM 6   /* PA6 = Y-  (ADC2 IN6) */
 
 static void pa_mode(int pin, uint32_t mode, uint32_t pull)
@@ -28,9 +36,7 @@ static void pa_out(int pin, int val)
 	pa_mode(pin, GPIO_MODE_OUTPUT, 0);
 	GPIO_BSRR(A) = val ? (1u << pin) : (1u << (pin + 16));
 }
-static void pa_hiz(int pin)     { pa_mode(pin, GPIO_MODE_INPUT, 0); }
 static void pa_analog(int pin)  { pa_mode(pin, GPIO_MODE_ANALOG, 0); }
-static void pa_in_pullup(int pin){ pa_mode(pin, GPIO_MODE_INPUT, 1); }
 
 static uint16_t adc2_read(int ch)
 {
@@ -56,28 +62,52 @@ void touch_init(void)
 	k_busy_wait(20);
 }
 
-int touch_read(int *x, int *y)
+/* median of 3 — a bare resistive panel jitters enough to misfire LVGL clicks */
+static int median3(int a, int b, int c)
 {
-	/* --- detect: X- low, Y+ input pull-up; touched pulls Y+ low --- */
-	pa_hiz(XP); pa_out(XM, 0); pa_hiz(YM); pa_in_pullup(YP);
+	if (a > b) { int t = a; a = b; b = t; }
+	if (b > c) { b = c; }
+	return a > b ? a : b;
+}
+
+static int read_axis(int hi_pin, int lo_pin, int sense_pin, int off_pin)
+{
+	pa_out(hi_pin, 1); pa_out(lo_pin, 0);
+	pa_analog(off_pin); pa_analog(sense_pin);
 	k_busy_wait(50);
-	int pressed = !((GPIO_IDR(A) >> YP) & 1u);
-	if (!pressed) {
+	int a = adc2_read(sense_pin);
+	int b = adc2_read(sense_pin);
+	int c = adc2_read(sense_pin);
+	return median3(a, b, c);
+}
+
+/* Pressure (Z): drive Y+ high and X- low, then sample X+. Untouched there is no
+ * current path and X+ sits at ~0; pressing bridges the plates and pulls X+ up,
+ * harder press -> higher reading. An analog threshold beats the old digital
+ * pull-up test, which needed a hard press just to cross the logic-low level. */
+static int touch_z(void)
+{
+	pa_out(YP, 1); pa_out(XM, 0);
+	pa_analog(YM); pa_analog(XP);
+	k_busy_wait(50);
+	return median3(adc2_read(XP), adc2_read(XP), adc2_read(XP));
+}
+
+int touch_read(int *x, int *y, int *z)
+{
+	int zv = touch_z();
+
+	if (z) {
+		*z = zv;   /* always reported so TOUCH_Z_MIN can be tuned on-screen */
+	}
+	if (zv < TOUCH_Z_MIN) {
 		return 0;
 	}
 
-	/* --- read X: drive X plate (X+ high, X- low), sample Y+ --- */
-	pa_out(XP, 1); pa_out(XM, 0); pa_hiz(YM); pa_analog(YP);
-	k_busy_wait(50);
-	int rx = adc2_read(YP);          /* IN4 */
-
-	/* --- read Y: drive Y plate (Y+ high, Y- low), sample X+ --- */
-	pa_out(YP, 1); pa_out(YM, 0); pa_hiz(XM); pa_analog(XP);
-	k_busy_wait(50);
-	int ry = adc2_read(XP);          /* IN3 */
-
-	*x = rx;
-	*y = ry;
+	/* drive the X plate, sample Y+ (ch5) — stock FUN_08015928 */
+	*x = read_axis(XP, XM, YP, YM);
+	/* drive the Y plate, sample X+ (ch4) — stock FUN_08015a0c */
+	*y = read_axis(YP, YM, XP, XM);
 	return 1;
 }
 
