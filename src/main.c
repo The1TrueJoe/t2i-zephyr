@@ -15,6 +15,8 @@
 #include <stdint.h>
 #include "touch.h"
 
+extern const lv_image_dsc_t juno_logo;   /* src/juno_logo.c */
+
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
 /* --- calibration knobs -----------------------------------------------------
@@ -95,10 +97,22 @@ int main(void)
 	display_blanking_off(disp);
 	MARK(0x00, 1);   /* stage marker — read 0x2001FF00 over SWD to see how far boot got */
 
-	/* Boot flash-window: stay fully awake ~3s so SWD/st-flash can always catch
-	 * this CPU. NRST is dead on this unit, so a sleeping (WFI) CPU can't be
-	 * grabbed to flash — keeping it awake makes every future flash trivial. */
-	for (int i = 0; i < 60; i++) { k_busy_wait(50000); }
+	/* Splash: the Juno logo on black for the duration of the boot flash-window.
+	 * That window exists so SWD/st-flash can always catch this CPU (NRST is dead
+	 * on this unit, and a sleeping CPU can't be grabbed) — showing the logo just
+	 * puts the otherwise-idle 3s to use. */
+	lv_obj_t *scr = lv_scr_act();
+	lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+	lv_obj_t *logo = lv_image_create(scr);
+	lv_image_set_src(logo, &juno_logo);
+	lv_obj_center(logo);
+
+	for (int i = 0; i < 60; i++) {
+		lv_timer_handler();
+		k_busy_wait(50000);
+	}
+	lv_obj_delete(logo);
 
 	touch_init();
 	beep_init();
@@ -111,7 +125,6 @@ int main(void)
 	lv_indev_set_read_cb(indev, touch_lv_read);
 	MARK(0x00, 4);
 
-	lv_obj_t *scr = lv_scr_act();
 	MARK(0x00, 5);
 
 	lv_obj_t *title = lv_label_create(scr);
