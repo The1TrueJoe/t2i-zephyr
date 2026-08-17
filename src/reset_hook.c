@@ -33,7 +33,13 @@
  * Clear DBGMCU_ENABLE for a production/battery build. */
 #define DBGMCU_ENABLE 1
 #define DBGMCU_CR    (*(volatile unsigned int *)0xE0042004)
+#define DBGMCU_APB1_FZ (*(volatile unsigned int *)0xE0042008)
 #define DBGMCU_SLEEP_STOP_STANDBY 0x7u   /* DBG_SLEEP | DBG_STOP | DBG_STANDBY */
+/* st-flash sets these so a watchdog cannot reset the chip while it is being
+ * programmed — but it never clears them, which silently disables our watchdog
+ * for as long as a probe has ever been attached. Clear them so the IWDG is
+ * real on the bench, not just in the field. */
+#define DBGMCU_FZ_WDG (3u << 11)         /* DBG_IWDG_STOP | DBG_WWDG_STOP */
 
 #define RCC_AHB2ENR  (*(volatile unsigned int *)0x40023834)
 #define RCC_AHB2RSTR (*(volatile unsigned int *)0x40023814)
@@ -50,6 +56,7 @@ void soc_reset_hook(void)
 
 #if DBGMCU_ENABLE
 	DBGMCU_CR |= DBGMCU_SLEEP_STOP_STANDBY;
+	DBGMCU_APB1_FZ &= ~DBGMCU_FZ_WDG;
 #endif
 
 	/* The RTI bootloader uses SysTick and hands off with it running and/or a

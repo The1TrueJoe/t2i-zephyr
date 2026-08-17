@@ -102,8 +102,16 @@ uint32_t safety_boot_attempts(void)
 	return state->magic == SAFE_MAGIC ? state->attempts : 0;
 }
 
+#define DBGMCU_APB1_FZ (*(volatile uint32_t *)0xE0042008U)
+#define DBGMCU_FZ_WDG  (3u << 11)
+
 void safety_watchdog_start(void)
 {
+	/* Re-assert here as well as in reset_hook: a debugger attaching *after*
+	 * boot re-sets these, and a frozen watchdog is a safety net that silently
+	 * does nothing. */
+	DBGMCU_APB1_FZ &= ~DBGMCU_FZ_WDG;
+
 	/* Order matters and is easy to get wrong: the IWDG is clocked by the LSI,
 	 * and the LSI only starts when the START key is written. Configuring first
 	 * and waiting on IWDG_SR before starting therefore spins forever, because
