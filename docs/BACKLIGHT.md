@@ -27,6 +27,10 @@ currently be removed (see §3).
 
 ## 2. The core problem
 
+**Update 2026-08-17: the latch is now clearable — drop PC12 for 3 s at boot, see
+§4b. The rest of this section still describes why it latches in the first place,
+which is why sleep must never stop the PWM.**
+
 **The backlight driver IC latches off whenever its PWM dim input stops receiving
 edges. Only removing power clears it.**
 
@@ -93,9 +97,22 @@ multi-hundred-millisecond static low, and latches. Fixed by opening with
 `backlight_set(1)` instead — the same "dark but still switching" value sleep
 uses, which hides the power-up noise just as well.
 
-**Also ruled out on hardware:** cycling **PC12** at boot (low 120 ms, then low
-400 ms, then high) does *not* unlatch the converter. PC12 is a shared rail, not
-the driver's own supply — do not retry this.
+### SOLVED: PC12 does unlatch it — it just needs 3 seconds
+
+Cycling **PC12** at boot clears the latch. The earlier attempts failed only
+because they were too short: **120 ms and 400 ms both leave it latched, 3 s
+works.** The rail has enough bulk capacitance that it simply does not collapse in
+a few hundred milliseconds. Verified on hardware — after an SWD flash the LCD and
+the keypad backlight both come back with no power cycle.
+
+So PC12 *is* the backlight driver's supply, and the previous "shared rail, not the
+supply" reading was wrong. It is still shared (panel logic + battery monitor), so
+this is safe **only at boot**, where nothing is on screen and the panel is reset
+and re-initialised immediately afterwards.
+
+Gated on `RCC_CSR.PORRSTF`: a cold power-on brings the driver up unlatched and
+skips the delay entirely, so the 3 s is paid only on a warm reset — the flash and
+USB-update path, where it costs nothing.
 
 ### The diagnostic that made it findable
 

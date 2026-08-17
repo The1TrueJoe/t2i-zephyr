@@ -179,6 +179,14 @@ static void backlight_set(int pct)
  * prescaler is raised at low duty to keep that pulse long enough — at PSC=9 the
  * timer runs 6MHz, so 1% of a 300-count period is only 0.5us.
  */
+/* How long PC12 must stay low for the backlight rail to actually collapse.
+ * Measured, not guessed: 120ms and 400ms leave the driver latched, 3s clears it.
+ * Only paid on a warm reset. */
+#define PC12_OFF_MS 3000
+
+#define RCC_CSR         (*(volatile uint32_t *)0x40023874U)
+#define RCC_CSR_PORRSTF (1u << 27)
+
 #define KP_ARR 300
 
 static void keypad_backlight_set(int pct)
@@ -223,8 +231,27 @@ static void lcd_hw_init(void)
 
 	/* PC12 = backlight/boost rail enable. Stock drives it high in FUN_08021354
 	 * (output PP + pull-up). Without it both backlights stay dark even though
-	 * the PWMs run and the panel logic answers on the FSMC bus. */
+	 * the PWMs run and the panel logic answers on the FSMC bus.
+	 *
+	 * A reset latches the backlight driver: the PWM on PA1 stops, and the only
+	 * cure is removing the driver's power. That is why reflashing used to leave
+	 * the screen dark until a manual power cycle, while the panel itself still
+	 * answered on the FSMC bus and every TIM2/PA1/PC12 register read correct.
+	 *
+	 * Dropping PC12 does it — but the rail has enough bulk capacitance that
+	 * 120ms and 400ms both failed and only 3s worked. Verified on hardware:
+	 * screen and keypad backlight both come back after an SWD flash with no
+	 * power cycle.
+	 *
+	 * Only warm resets need it. A cold power-on brings the driver up unlatched,
+	 * so the flag check keeps normal boots instant and pays the 3s only on the
+	 * flash/update path, where it is free. */
+	if (!(RCC_CSR & RCC_CSR_PORRSTF)) {
+		pin_out(GPIO_PORT_C, 12, 0);
+		k_msleep(PC12_OFF_MS);
+	}
 	pin_out(GPIO_PORT_C, 12, 1);
+	k_msleep(50);
 
 	keypad_backlight_set(90);
 
