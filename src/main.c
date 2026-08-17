@@ -28,6 +28,7 @@
 #include "touch.h"
 #include "accel.h"
 #include "keypad.h"
+#include "battery.h"
 #include "wake.h"
 #include "lowpower.h"
 
@@ -101,6 +102,7 @@ int main(void)
 	bool recovery = keypad_any();
 
 	ui_touch_indev_init();
+	battery_init();
 	bool accel_ok = accel_init();
 	bool wake_ok = wake_init();
 	power_init(disp, recovery);
@@ -132,6 +134,7 @@ int main(void)
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();
+		st.key_name = keypad_name(st.key);
 
 		/* Report key transitions to the host over USB CDC. This is the path to
 		 * publishing button presses without the radio: tools/t2i_mqtt_bridge.py
@@ -140,10 +143,11 @@ int main(void)
 			char ev[48];
 
 			if (st.key != KEY_NONE) {
-				snprintf(ev, sizeof(ev), "KEY DOWN %u r%d c%d",
-					 st.key, st.key_row, st.key_col);
+				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
+					 st.key, st.key_name, st.key_row, st.key_col);
 			} else {
-				snprintf(ev, sizeof(ev), "KEY UP %u", last_reported_key);
+				snprintf(ev, sizeof(ev), "KEY UP %u %s", last_reported_key,
+					 keypad_name(last_reported_key));
 			}
 			updater_emit(ev);
 			last_reported_key = st.key;
@@ -190,6 +194,10 @@ int main(void)
 		}
 
 		accel_read(&st.accel_x, &st.accel_y, &st.accel_z);
+		st.batt_raw = battery_raw();
+		st.batt_low = battery_low();
+		st.charger = battery_charger_present();
+		st.charge_state = battery_charge_state();
 		ui_touch_raw(&st.touch_x, &st.touch_y, &st.touch_z);
 		ui_touch_range(&st.touch_min_x, &st.touch_max_x,
 			       &st.touch_min_y, &st.touch_max_y);

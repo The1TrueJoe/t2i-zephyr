@@ -156,7 +156,7 @@ void ui_invalidate(void)
 
 void ui_render(const struct t2i_status *st)
 {
-	char b[192];
+	char b[288];
 
 	if (st->wdt_test_armed) {
 		snprintf(b, sizeof(b),
@@ -175,7 +175,8 @@ void ui_render(const struct t2i_status *st)
 		snprintf(b, sizeof(b),
 			 "touch %s\n raw %d,%d z%d\n X %d-%d\n Y %d-%d\n\n"
 			 "accel %s\n x%d y%d z%d\n\n"
-			 "key %d  r%d c%d\n rows 0x%02x\n\n"
+			 "key %d %s\n r%d c%d  rows 0x%02x\n"
+			 "batt %d%s  chg %d/%d\n\n"
 			 "%s  wakes %u\n irqs %u  motions %u\n woke by %s\n"
 			 "stops %u  clk %s\nboot %u%s  rst %s%s",
 			 st->touch_down ? "DOWN" : "up",
@@ -184,8 +185,10 @@ void ui_render(const struct t2i_status *st)
 			 st->touch_min_y, st->touch_max_y,
 			 st->accel_ok ? "ok" : "NOT FOUND",
 			 st->accel_x, st->accel_y, st->accel_z,
-			 st->key == 0xFF ? -1 : st->key, st->key_row, st->key_col,
-			 st->key_rows,
+			 st->key == 0xFF ? -1 : st->key, st->key_name ? st->key_name : "-",
+			 st->key_row, st->key_col, st->key_rows,
+			 st->batt_raw, st->batt_low ? " LOW" : "",
+			 st->charger, st->charge_state,
 			 st->asleep ? "ASLEEP" : "awake", st->wakes,
 			 st->wake_irqs, st->motion_events, st->woke_by,
 			 st->stops, st->clk,

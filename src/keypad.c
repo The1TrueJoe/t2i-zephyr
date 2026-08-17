@@ -94,6 +94,81 @@ bool keypad_any(void)
 	return rows_read() != 0;
 }
 
+
+/* Stock RTI key code (128..180) -> button name.
+ *
+ * Two independent sources agree 52/52: the firmware's own "Keypad Test" diag
+ * page (DiagHandleHardkeyPress at 0x080046a8 dispatches code-128 through a
+ * 53-entry table, each case painting one labelled cell) and Integration
+ * Designer's programmable-hardkey list (length-prefixed UTF-16 at file offset
+ * 0xfc1588, entry i == code 128+i). Only 180 (Backlight) is absent from ID,
+ * being a local hardware function rather than a programmable key.
+ */
+static const char *const key_names[53] = {
+	/* 128 */ "Exit",            /* r2 c4  PE2 /PC4 */
+	/* 129 */ "Mute",            /* r0 c7  PE0 /PC7 */
+	/* 130 */ "Soft Lft Cntr",   /* r0 c3  PE0 /PC3  ID: Softkey 2 */
+	/* 131 */ "Up",              /* r1 c4  PE1 /PC4 */
+	/* 132 */ "Left",            /* r1 c5  PE1 /PC5 */
+	/* 133 */ "Right",           /* r1 c7  PE1 /PC7 */
+	/* 134 */ "Down",            /* r2 c2  PE2 /PC2 */
+	/* 135 */ "OK",              /* r5 c1  PE14/PC1 */
+	/* 136 */ "Soft Lft",        /* r0 c4  PE0 /PC4  ID: Softkey 1 */
+	/* 137 */ "Soft Rht",        /* r0 c1  PE0 /PC1  ID: Softkey 4 */
+	/* 138 */ "Vol +",           /* r1 c6  PE1 /PC6 */
+	/* 139 */ "Vol -",           /* r2 c1  PE2 /PC1 */
+	/* 140 */ "Ch +",            /* r6 c7  PE15/PC7 */
+	/* 141 */ "Ch -",            /* r2 c3  PE2 /PC3 */
+	/* 142 */ "Guide",           /* r2 c7  PE2 /PC7 */
+	/* 143 */ "Menu",            /* r2 c6  PE2 /PC6 */
+	/* 144 */ "Info",            /* r2 c5  PE2 /PC5 */
+	/* 145 */ "Off",             /* r0 c5  PE0 /PC5  ID: Power Off */
+	/* 146 */ "Play",            /* r4 c2  PE13/PC2 */
+	/* 147 */ "Pause",           /* r3 c6  PE12/PC6 */
+	/* 148 */ "Stop",            /* r3 c5  PE12/PC5 */
+	/* 149 */ "Record",          /* r3 c4  PE12/PC4 */
+	/* 150 */ "<<",              /* r4 c4  PE13/PC4  ID: Scan << */
+	/* 151 */ ">>",              /* r4 c3  PE13/PC3  ID: Scan >> */
+	/* 152 */ "|<<",             /* r4 c6  PE13/PC6  ID: Skip << */
+	/* 153 */ ">>|",             /* r4 c5  PE13/PC5  ID: Skip >> */
+	/* 154 */ "1",               /* r5 c3  PE14/PC3 */
+	/* 155 */ "2",               /* r5 c2  PE14/PC2 */
+	/* 156 */ "3",               /* r4 c7  PE13/PC7 */
+	/* 157 */ "4",               /* r5 c6  PE14/PC6 */
+	/* 158 */ "5",               /* r5 c5  PE14/PC5 */
+	/* 159 */ "6",               /* r5 c4  PE14/PC4 */
+	/* 160 */ "7",               /* r6 c2  PE15/PC2 */
+	/* 161 */ "8",               /* r6 c6  PE15/PC6 */
+	/* 162 */ "9",               /* r5 c7  PE14/PC7 */
+	/* 163 */ "0",               /* r6 c4  PE15/PC4 */
+	/* 164 */ "-/.",             /* r6 c5  PE15/PC5 */
+	/* 165 */ "Enter",           /* r6 c3  PE15/PC3 */
+	/* 166 */ "Scroll Up",       /* r3 c0  PE12/PC0  ID: Joystick Up */
+	/* 167 */ "Scroll Click",    /* r2 c0  PE2 /PC0  ID: Joystick Click */
+	/* 168 */ "Scroll Down",     /* r1 c0  PE1 /PC0  ID: Joystick Down */
+	/* 169 */ "Scroll Left",     /* r0 c0  PE0 /PC0  ID: Joystick Left */
+	/* 170 */ "Scroll Right",    /* r4 c0  PE13/PC0  ID: Joystick Right */
+	/* 171 */ "On",              /* r0 c6  PE0 /PC6  ID: Power On */
+	/* 172 */ "List",            /* r1 c2  PE1 /PC2 */
+	/* 173 */ "Red",             /* r3 c2  PE12/PC2 */
+	/* 174 */ "Green",           /* r3 c7  PE12/PC7 */
+	/* 175 */ "Yellow",          /* r3 c3  PE12/PC3 */
+	/* 176 */ "Blue",            /* r3 c1  PE12/PC1 */
+	/* 177 */ "Soft Rht Cntr",   /* r0 c2  PE0 /PC2  ID: Softkey 3 */
+	/* 178 */ "Prev",            /* r1 c3  PE1 /PC3 */
+	/* 179 */ "Back",            /* r1 c1  PE1 /PC1 */
+	/* 180 */ "Backlight",       /* r6 c1  PE15/PC1  (not exposed by ID) */
+};
+
+const char *keypad_name(uint8_t code)
+{
+	/* One unsigned range test covers KEY_NONE (0xFF) and anything unexpected. */
+	if ((unsigned)(code - 128u) >= 53u) {
+		return "?";
+	}
+	return key_names[code - 128];
+}
+
 uint8_t keypad_scan(int *row, int *col)
 {
 	for (int c = 0; c < 8; c++) {

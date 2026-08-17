@@ -24,4 +24,7 @@ uint8_t keypad_rows(void);
  * while working out which physical button is which. */
 uint8_t keypad_scan(int *row, int *col);
 
+/* Human name for a stock key code, or "?" if unknown. See src/keypad.c. */
+const char *keypad_name(uint8_t code);
+
 #endif /* T2I_KEYPAD_H */

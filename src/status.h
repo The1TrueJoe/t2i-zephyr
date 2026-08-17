@@ -23,6 +23,13 @@ struct t2i_status {
 	uint8_t  key;                            /* stock RTI code, 0xFF = none */
 	int      key_row, key_col;
 	uint8_t  key_rows;                       /* raw row bitmap */
+	const char *key_name;                    /* human name for `key` */
+
+	/* battery / charger */
+	int      batt_raw;                       /* 12-bit counts, -1 = no reading */
+	bool     batt_low;
+	bool     charger;
+	uint8_t  charge_state;
 
 	/* power / sleep */
 	bool     asleep;

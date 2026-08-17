@@ -32,12 +32,21 @@ import glob
 import sys
 import time
 
-# Stock RTI key codes -> names. Extracted from the stock firmware's keymap table
-# at 0x08011344; names for the codes we have confirmed. Unmapped codes are still
-# published by number, so an unknown button is never silently dropped.
-KEY_NAMES = {
-    135: "ok",
+# The firmware sends the button name with each event, so no table is needed here.
+# Names come from stock RTI itself (see docs/BUTTON-NAMES.md) and are slugified
+# below for MQTT: "Vol +" -> "vol_plus", "|<<" -> "skip_back".
+SLUG = {
+    "+": "plus", "-": "minus", "<<": "scan_back", ">>": "scan_fwd",
+    "|<<": "skip_back", ">>|": "skip_fwd", "-/.": "dash_dot",
 }
+
+
+def slugify(name):
+    if name in SLUG:
+        return SLUG[name]
+    out = name.lower().replace("+", " plus").replace("-", " minus")
+    out = "".join(ch if ch.isalnum() else " " for ch in out)
+    return "_".join(out.split()) or "unknown"
 
 
 def find_port(explicit=None):
@@ -63,7 +72,12 @@ def parse_line(line):
     except ValueError:
         return None
 
-    ev = {"code": code, "name": KEY_NAMES.get(code, f"key_{code}"), "state": state}
+    # "KEY DOWN 135 OK r5 c1" -> name is everything between code and rN/cN
+    name_parts = [p for p in parts[3:]
+                  if not (len(p) > 1 and p[0] in "rc" and p[1:].lstrip("-").isdigit())]
+    name = " ".join(name_parts) if name_parts else f"key_{code}"
+
+    ev = {"code": code, "name": slugify(name), "label": name, "state": state}
     for p in parts[3:]:
         if p.startswith("r"):
             try:
