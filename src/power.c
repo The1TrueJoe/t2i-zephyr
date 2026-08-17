@@ -23,8 +23,6 @@
  * battery monitor, so taking it low browns out the display and lights the
  * low-battery indicator. Backlight off is done at the timer/pin instead. */
 #define BRIGHT_AWAKE  128
-#define AWAKE_PCT     50   /* same level, expressed for the ramp */
-
 /* "Off" is the smallest non-zero duty, not 0.
  *
  * Stock RTI drives its backlight fully off (TIM2 disabled, PA1 low) and we
@@ -40,26 +38,6 @@
  * DBGMCU DBG_STOP set — and with NRST dead that means a power-cycle per flash.
  * Off by default; turn on deliberately for power measurement, ideally with
  * recovery mode (hold a key at boot) available as the escape hatch. */
-/* STOP mode while asleep: ~0.5mA against ~15-25mA in WFI.
- *
- * Previously off because it appeared not to work — that was our entry sequence
- * missing CWUF clearing, pending-EXTI clearing and the SEV/WFE/WFE pattern (see
- * lowpower.c). With those fixed it is worth running for real.
- *
- * ESCAPE HATCH: a stopped CPU may not be attachable over SWD, and NRST is dead
- * on this unit. If flashing starts failing, hold any key while powering on —
- * recovery mode never sleeps, so the target stays awake and flashable. */
-/* OFF. The entry sequence is now correct (CWUF, pending EXTI, SEV/WFE/WFE —
- * see lowpower.c), but STOP stops SysTick, so k_uptime_get() does not advance
- * while stopped. The sleep timer is built on uptime, so on every wake the idle
- * delta is instantly stale and the remote sleeps again immediately: the panel
- * toggles off/on repeatedly and the screen visibly flashes.
- *
- * Making STOP viable needs the kernel's timekeeping to survive it — either a
- * free-running counter/RTC to correct uptime on wake, or proper CONFIG_PM
- * integration (which STM32F2 lacks: no power.c, no LPTIM). Not a small change,
- * and not worth destabilising sleep for until there is a meter to prove the
- * saving. */
 #define USE_STOP_MODE 0
 
 /* Never STOP this soon after boot, so the flash-window stays catchable. */
@@ -83,33 +61,6 @@ const char *power_woke_by(void) { return woke_by; }
 uint32_t power_wakes(void)      { return wake_count_total; }
 bool power_asleep(void)         { return asleep; }
 
-/* Ramp the backlight instead of stepping it.
- *
- * Stock RTI never changes brightness abruptly: its Backlight Task walks the
- * level in increments of 7 (FUN_0801a96c), calling the LCD and keypad setters
- * with every intermediate value. Jumping straight to the timer-off/pin-low
- * endpoint is what this driver IC does not recover from — dimming works, but a
- * step to 0 stays dark until power is removed. Walking down the same way stock
- * does reaches a genuinely dark screen and still comes back.
- */
-#define RAMP_STEP   7
-#define RAMP_PAUSE_MS 15
-
-static void backlight_ramp(int from_pct, int to_pct)
-{
-	int v = from_pct;
-
-	while (v != to_pct) {
-		if (v < to_pct) {
-			v = (v + RAMP_STEP > to_pct) ? to_pct : v + RAMP_STEP;
-		} else {
-			v = (v - RAMP_STEP < to_pct) ? to_pct : v - RAMP_STEP;
-		}
-		display_set_brightness(display, (uint8_t)(v * 255 / 100));
-		k_msleep(RAMP_PAUSE_MS);
-	}
-}
-
 bool power_tick(bool activity, const char *source)
 {
 	if (activity) {
@@ -123,7 +74,7 @@ bool power_tick(bool activity, const char *source)
 			woke_by = source ? source : "?";
 			wake_count_total++;
 			display_blanking_off(display);   /* panel back on */
-			backlight_ramp(0, AWAKE_PCT);    /* walk up, as stock does */
+			display_set_brightness(display, BRIGHT_AWAKE);
 			PMARK(0x04, BRIGHT_AWAKE);
 			asleep = false;
 			PMARK(0x00, 0);
@@ -132,7 +83,6 @@ bool power_tick(bool activity, const char *source)
 		}
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
-		backlight_ramp(AWAKE_PCT, 0);    /* walk down before the endpoint */
 		display_blanking_on(display);    /* panel off = truly black, like stock */
 		PMARK(0x04, 0);
 		asleep = true;
