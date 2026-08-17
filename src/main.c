@@ -47,6 +47,11 @@ void hx8347_backlight_state(uint32_t *out);
  * feeding stops, and the remote should reset itself ~8s later with the reason
  * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
  * assuming it does. */
+/* Bumped by hand. On a USB-only remote there is otherwise no way to tell which
+ * image is actually running, and "did the update commit?" is the single most
+ * important question the update path has to answer. */
+#define FW_VERSION "dev"
+
 #define IR_ENABLE_TEST 0   /* browns the remote out — see below */
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
@@ -129,6 +134,7 @@ int main(void)
 	{
 		char idb[40];
 
+		updater_emit("T2i fw " FW_VERSION);
 		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
 		updater_emit(idb);
 	}

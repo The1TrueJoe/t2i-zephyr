@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "t2i_regs.h"
+#include "safety.h"
 
 #define PANEL_W 240
 #define PANEL_H 320
@@ -248,7 +249,17 @@ static void lcd_hw_init(void)
 	 * flash/update path, where it is free. */
 	if (!(RCC_CSR & RCC_CSR_PORRSTF)) {
 		pin_out(GPIO_PORT_C, 12, 0);
-		k_msleep(PC12_OFF_MS);
+		/* Feed while we wait. This runs in display init, i.e. BEFORE main and
+		 * before safety_watchdog_start() — but the IWDG cannot be stopped once
+		 * started, so after a warm reset it is already running with an 8s
+		 * period. Burning 3s of that budget before the first feed would leave
+		 * very little margin on a path that must never fail: USB is the only
+		 * way into a radio remote. Feeding an unstarted IWDG is a no-op, so
+		 * this is safe on a cold boot too. */
+		for (int i = 0; i < PC12_OFF_MS; i += 100) {
+			k_msleep(100);
+			safety_watchdog_feed();
+		}
 	}
 	pin_out(GPIO_PORT_C, 12, 1);
 	k_msleep(50);
