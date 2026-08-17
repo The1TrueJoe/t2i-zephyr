@@ -187,6 +187,7 @@ int main(void)
 			char ev[48];
 
 			if (st.key != KEY_NONE) {
+				beep_click();   /* stock clicks on every key, not just some */
 				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
 					 st.key, st.key_name, st.key_row, st.key_col);
 			} else {
@@ -208,7 +209,6 @@ int main(void)
 			 * Do not re-enable until the gating is confirmed on a scope or the
 			 * drive current is measured. */
 			if (IR_ENABLE_TEST && st.key == IR_TEST_KEY) {
-				beep_click();
 				ir_send_nec(0x00, 0x15);
 				updater_emit("IR sent NEC 00 15");
 			}
