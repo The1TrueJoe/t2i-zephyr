@@ -62,6 +62,7 @@
  *       Timer clock = 120 MHz (APB2 /2, x2). ---- */
 #define TIM8_BASE      0x40010400u
 #define TIM8_CR1       REG32(TIM8_BASE + 0x00)
+#define TIM8_EGR       REG32(TIM8_BASE + 0x14)
 #define TIM8_CCMR2     REG32(TIM8_BASE + 0x1C)
 #define TIM8_CCER      REG32(TIM8_BASE + 0x20)
 #define TIM8_PSC       REG32(TIM8_BASE + 0x28)

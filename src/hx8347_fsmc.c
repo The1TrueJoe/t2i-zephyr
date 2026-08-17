@@ -134,19 +134,38 @@ static void backlight_set(int pct)
 	TIM2_CR1   = TIM_CR1_CEN;
 }
 
-static void keypad_backlight_on(void)
+/* Keypad backlight on PC8 = TIM8_CH3.
+ *
+ * Same rule as the LCD backlight: never stop the PWM. Both backlights are fed
+ * by the boost converter enabled by PC12, and taking either dim input static
+ * appears to latch that shared converter off — which is why turning the keypad
+ * backlight "off" during sleep twice killed the LCD backlight as well, with no
+ * apparent connection between them.
+ *
+ * So "off" here is the lowest duty whose pulse the driver can still act on
+ * (>=5us, as with the LCD): visually dark, electrically still switching. The
+ * prescaler is raised at low duty to keep that pulse long enough — at PSC=9 the
+ * timer runs 6MHz, so 1% of a 300-count period is only 0.5us.
+ */
+#define KP_ARR 300
+
+static void keypad_backlight_set(int pct)
 {
+	if (pct < 0) pct = 0; if (pct > 100) pct = 100;
 	RCC_APB2ENR |= (1u << 1);                /* TIM8EN */
+
+	/* PSC 9 -> 6MHz -> 20kHz PWM (inaudible) for normal levels.
+	 * PSC 99 -> 600kHz -> 2kHz, so even 1% is a 5us pulse. */
+	uint32_t psc = (pct >= 10) ? 9 : 99;
+
 	pin_af(GPIO_PORT_C, 8, 3);               /* PC8 -> AF3 = TIM8_CH3 */
-	/* PWM mode 2 + CC3P, matching the LCD channel, so duty maps directly to
-	 * brightness. This was PWM mode *1* with the same active-low polarity,
-	 * which inverts it: CCR3=271/300 then meant the pin was LOW 90% of the
-	 * time, i.e. ~10% brightness, which reads as "keypad backlight is off". */
-	TIM8_PSC = 9; TIM8_ARR = 300;
-	TIM8_CCR3 = 270;                         /* 90% */
-	TIM8_CCMR2 = (7u << 4) | (1u << 3);      /* OC3M = PWM2 + OC3PE */
-	TIM8_CCER  = (1u << 8) | (1u << 9);      /* CC3E + CC3P */
+	TIM8_PSC = psc;
+	TIM8_ARR = KP_ARR;
+	TIM8_CCR3 = (uint32_t)pct * KP_ARR / 100;
+	TIM8_CCMR2 = (7u << 4) | (1u << 3);      /* OC3M = PWM mode 2 + OC3PE */
+	TIM8_CCER  = (1u << 8) | (1u << 9);      /* CC3E + CC3P (active-low) */
 	TIM8_BDTR  = TIM_BDTR_MOE;               /* advanced timer needs MOE */
+	TIM8_EGR   = TIM_EGR_UG;
 	TIM8_CR1   = TIM_CR1_CEN;
 }
 
@@ -167,7 +186,7 @@ static void lcd_hw_init(void)
 	 * the PWMs run and the panel logic answers on the FSMC bus. */
 	pin_out(GPIO_PORT_C, 12, 1);
 
-	keypad_backlight_on();
+	keypad_backlight_set(90);
 
 	int dpins[] = {0,1,4,5,7,13,14,15};
 	for (unsigned i = 0; i < sizeof(dpins)/sizeof(dpins[0]); i++) pin_af(GPIO_PORT_D, dpins[i], 12);
@@ -265,6 +284,7 @@ static int hx8347_blanking_on(const struct device *dev)
 	lcd_reg(0x1F, 0xA9); k_msleep(5);    /* power control down */
 	lcd_reg(0x19, 0x00);                 /* oscillator off */
 	backlight_set(1);                    /* minimum, but never static */
+	keypad_backlight_set(1);             /* same: dark, but still switching */
 	return 0;
 }
 
@@ -281,6 +301,7 @@ static int hx8347_blanking_off(const struct device *dev)
 	lcd_reg(0x28, 0x38); k_msleep(5);
 	lcd_reg(0x28, 0x3C);                 /* display on */
 	backlight_set(50);
+	keypad_backlight_set(90);
 	return 0;
 }
 
