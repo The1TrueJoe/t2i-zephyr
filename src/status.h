@@ -33,6 +33,10 @@ struct t2i_status {
 	uint32_t stops;                          /* STOP-mode entries */
 	const char *clk;                         /* "PLL120" / "HSI16" / "HSE" */
 
+	/* safety */
+	uint32_t boot_attempts;                  /* consecutive boots not yet healthy */
+	bool     healthy;                        /* this boot has been declared good */
+
 	/* USB updater */
 	bool     usb_busy;
 	uint32_t usb_received, usb_declared;

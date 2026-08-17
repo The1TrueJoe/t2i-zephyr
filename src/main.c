@@ -1,17 +1,20 @@
 /*
  * RTI T2i firmware — top level.
  *
- * Deliberately thin: bring the subsystems up in a safe order, then gather
- * inputs, feed the sleep policy, and render. Everything substantial lives in a
- * module:
+ * Boot order is chosen for recoverability, not convenience. The radio-equipped
+ * remote has no SWD, and the RTI bootloader has no USB of its own, so the
+ * application enumerating USB *is* the only way back into that unit. Anything
+ * that could stop it is therefore started after it, and guarded:
  *
- *   updater.c   USB update receiver  (anti-brick path — started first)
- *   ui.c        LVGL screens, splash, touch->pointer binding
- *   power.c     sleep/wake policy
- *   wake.c      EXTI wake sources (keypad rows, accel INT1)
- *   lowpower.c  STM32 STOP mode primitive
- *   keypad.c    8x7 matrix        accel.c  LIS3DH
- *   touch.c     4-wire resistive  hx8347_fsmc.c  display driver
+ *   1. safety_boot_check()  count this boot; go USB-only if the last few failed
+ *   2. updater_init()       USB update receiver, in its own thread
+ *   3. watchdog             a hang now becomes a reset, not a dead remote
+ *   4. everything else      display, LVGL, touch, keypad, accelerometer
+ *   5. safety_mark_healthy()once the loop has genuinely run for a while
+ *
+ * Modules: updater.c (USB), ui.c (LVGL), power.c (sleep policy), wake.c (EXTI),
+ * lowpower.c (STOP), safety.c (watchdog + boot counting), keypad/accel/touch,
+ * hx8347_fsmc.c (display driver).
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -20,6 +23,7 @@
 #include "ui.h"
 #include "power.h"
 #include "updater.h"
+#include "safety.h"
 #include "touch.h"
 #include "accel.h"
 #include "keypad.h"
@@ -28,21 +32,54 @@
 
 #define SPLASH_MS 3000
 
+/* Run this long without incident before declaring the boot good. Long enough to
+ * be past init and a few hundred render passes. */
+#define HEALTHY_AFTER_MS 10000
+
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
+
+/* USB-only safe mode: the previous boots failed, so run the update receiver and
+ * absolutely nothing else. Whatever was crashing — display, LVGL, touch, radio
+ * — is not started here, so the host can always push a working image. */
+static void safe_mode(void)
+{
+	MARK(0x00, 0x5AFE);
+
+	/* Clear the counter on the way in, so safe mode is one-shot: the next boot
+	 * tries the real firmware again. Without this, anything that resets before
+	 * the healthy mark — including a developer's st-flash --reset — latches the
+	 * remote into safe mode permanently. If the firmware really is broken it
+	 * simply fails three more times and lands back here, which is the
+	 * self-recovering behaviour we want. */
+	safety_mark_healthy();
+
+	while (1) {
+		safety_watchdog_feed();
+		k_msleep(100);
+	}
+}
 
 int main(void)
 {
-	const struct device *disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+	bool unsafe_boot = safety_boot_check();
 
-	/* The USB update receiver comes up FIRST and in its own thread. It is the
-	 * only way back into a remote without SWD, so it must not depend on the
-	 * display, LVGL, or anything else below surviving. */
+	/* USB first, always: it is the recovery path and must not depend on
+	 * anything below it surviving. */
 	updater_init();
 	MARK(0x00, 1);
 
+	/* Only now arm the watchdog — USB is up, so a later hang resets into a
+	 * boot that still enumerates. */
+	safety_watchdog_start();
+
+	if (unsafe_boot) {
+		safe_mode();   /* never returns */
+	}
+
+	const struct device *disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+
 	if (!device_is_ready(disp)) {
-		/* No screen, but USB is already live — still recoverable. */
-		while (1) { k_msleep(1000); }
+		safe_mode();   /* no screen, but USB is live — still recoverable */
 	}
 
 	ui_init(disp, SPLASH_MS);
@@ -52,8 +89,8 @@ int main(void)
 	beep_init();
 	keypad_init();
 
-	/* Recovery: hold any key while powering on and the remote never sleeps,
-	 * giving a deterministic always-attachable target for SWD flashing. */
+	/* Hold any key while powering on: never sleep. Gives a deterministic
+	 * always-attachable target for SWD flashing on the bench unit. */
 	bool recovery = keypad_any();
 
 	ui_touch_indev_init();
@@ -67,11 +104,21 @@ int main(void)
 		.recovery = recovery,
 		.woke_by = "-",
 		.clk = "?",
+		.boot_attempts = safety_boot_attempts(),
 	};
 	uint32_t beat = 0;
+	bool healthy = false;
+	int64_t started = k_uptime_get();
 
 	while (1) {
 		MARK(0x04, ++beat);
+		safety_watchdog_feed();
+
+		if (!healthy && k_uptime_get() - started > HEALTHY_AFTER_MS) {
+			safety_mark_healthy();
+			healthy = true;
+			st.healthy = true;
+		}
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();

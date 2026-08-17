@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "updater.h"
+#include "safety.h"
 
 
 #define DBG(n)   (*(volatile uint32_t *)(0x2001FF20U + ((n) * 4U)))  /* 0..3 */
@@ -70,7 +71,16 @@ static uint8_t spi_rdsr(void)
 	(void)spi_transceive_dt(&flash_spi, &ts, &rs);
 	return rx[1];
 }
-static void spi_wait(void) { while (spi_rdsr() & 0x01) { k_yield(); } }
+/* A 64KB sector erase on this part can take seconds and the staging erase does
+ * eight of them — far longer than the watchdog period, so feed it here or the
+ * remote resets in the middle of taking an update. */
+static void spi_wait(void)
+{
+	while (spi_rdsr() & 0x01) {
+		safety_watchdog_feed();
+		k_yield();
+	}
+}
 static void spi_erase64k(uint32_t a)
 {
 	uint8_t c[5] = {0xDC, a >> 24, a >> 16, a >> 8, a};
@@ -258,8 +268,10 @@ static void updater_thread(void *a, void *b, void *c)
 	}
 }
 
-/* Its own thread, at a higher priority than main: the update path must keep
- * running even if the UI is wedged. */
+/* Cooperative priority, so it outranks main and gets serviced even if main is
+ * spinning. Learned the hard way: a busy-wait in main starved this thread
+ * before USB could enumerate, which took out the only recovery path. It only
+ * ever blocks on the CDC ring buffer, so it never hogs the CPU. */
 K_THREAD_STACK_DEFINE(updater_stack, 2048);
 static struct k_thread updater_tcb;
 
@@ -267,6 +279,6 @@ void updater_init(void)
 {
 	k_thread_create(&updater_tcb, updater_stack, K_THREAD_STACK_SIZEOF(updater_stack),
 			updater_thread, NULL, NULL, NULL,
-			K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+			K_PRIO_COOP(7), 0, K_NO_WAIT);
 	k_thread_name_set(&updater_tcb, "usb-updater");
 }
