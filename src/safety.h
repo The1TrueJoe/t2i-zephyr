@@ -48,4 +48,14 @@ uint32_t safety_boot_attempts(void);
 void safety_watchdog_start(void);
 void safety_watchdog_feed(void);
 
+/* Why the remote last reset, captured from RCC_CSR at boot (the flags are
+ * cleared afterwards so the next boot reports its own cause). Knowing a unit
+ * rebooted because the watchdog bit — rather than a user pulling power — is the
+ * difference between "it's fine" and "something is hanging in the field". */
+const char *safety_reset_cause(void);
+
+/* Deliberately stop feeding the watchdog, to prove it actually resets us.
+ * A safety net nobody has seen work is not a safety net. */
+void safety_watchdog_selftest(void);
+
 #endif /* T2I_SAFETY_H */

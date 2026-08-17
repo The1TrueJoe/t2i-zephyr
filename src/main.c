@@ -36,6 +36,12 @@
  * be past init and a few hundred render passes. */
 #define HEALTHY_AFTER_MS 10000
 
+/* Hold the debug key (stock code 180) this long to arm the watchdog self-test:
+ * feeding stops, and the remote should reset itself ~8s later with the reason
+ * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
+ * assuming it does. */
+#define DEBUG_HOLD_MS 3000
+
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
 
 /* USB-only safe mode: the previous boots failed, so run the update receiver and
@@ -105,8 +111,10 @@ int main(void)
 		.woke_by = "-",
 		.clk = "?",
 		.boot_attempts = safety_boot_attempts(),
+		.reset_cause = safety_reset_cause(),
 	};
 	uint32_t beat = 0;
+	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
 
@@ -122,6 +130,21 @@ int main(void)
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();
+
+		/* debug key: hold to arm the watchdog self-test */
+		if (st.key == KEY_DEBUG) {
+			if (debug_held_since == 0) {
+				debug_held_since = k_uptime_get();
+			}
+			st.debug_hold_ms = (uint32_t)(k_uptime_get() - debug_held_since);
+			if (st.debug_hold_ms >= DEBUG_HOLD_MS && !st.wdt_test_armed) {
+				safety_watchdog_selftest();
+				st.wdt_test_armed = true;
+			}
+		} else {
+			debug_held_since = 0;
+			st.debug_hold_ms = 0;
+		}
 
 		bool motion = accel_motion();
 		if (motion) {

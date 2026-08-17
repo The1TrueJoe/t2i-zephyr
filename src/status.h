@@ -36,6 +36,9 @@ struct t2i_status {
 	/* safety */
 	uint32_t boot_attempts;                  /* consecutive boots not yet healthy */
 	bool     healthy;                        /* this boot has been declared good */
+	const char *reset_cause;                 /* why we last rebooted */
+	uint32_t debug_hold_ms;                  /* how long KEY_DEBUG has been held */
+	bool     wdt_test_armed;                 /* watchdog self-test running */
 
 	/* USB updater */
 	bool     usb_busy;

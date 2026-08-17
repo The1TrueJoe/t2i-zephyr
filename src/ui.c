@@ -5,6 +5,7 @@
 #include <zephyr/drivers/display.h>
 #include <lvgl.h>
 #include <stdio.h>
+#include <string.h>
 #include "ui.h"
 #include "touch.h"
 
@@ -138,6 +139,14 @@ void ui_render(const struct t2i_status *st)
 {
 	char b[192];
 
+	if (st->wdt_test_armed) {
+		snprintf(b, sizeof(b),
+			 "WATCHDOG SELF-TEST\n\nfeeding stopped\n\nthis remote should\nreset itself within\n~8 seconds, then\nshow: rst WATCHDOG");
+		lv_label_set_text(info, b);
+		lv_timer_handler();
+		return;
+	}
+
 	if (st->usb_busy) {
 		/* A firmware update is in progress — nothing else matters, and the
 		 * host is mid-transfer, so show only that. */
@@ -149,7 +158,7 @@ void ui_render(const struct t2i_status *st)
 			 "accel %s\n x%d y%d z%d\n\n"
 			 "key %d  r%d c%d\n rows 0x%02x\n\n"
 			 "%s  wakes %u\n irqs %u  motions %u\n woke by %s\n"
-			 "stops %u  clk %s\nboot %u%s%s",
+			 "stops %u  clk %s\nboot %u%s  rst %s%s",
 			 st->touch_down ? "DOWN" : "up",
 			 st->touch_x, st->touch_y, st->touch_z,
 			 st->touch_min_x, st->touch_max_x,
@@ -162,7 +171,14 @@ void ui_render(const struct t2i_status *st)
 			 st->wake_irqs, st->motion_events, st->woke_by,
 			 st->stops, st->clk,
 			 st->boot_attempts, st->healthy ? " ok" : " UNPROVEN",
+			 st->reset_cause,
 			 st->recovery ? "\nRECOVERY (no sleep)" : "");
+
+	if (st->debug_hold_ms) {
+		char h[48];
+		snprintf(h, sizeof(h), "\nDEBUG held %u ms", st->debug_hold_ms);
+		strncat(b, h, sizeof(b) - strlen(b) - 1);
+	}
 	}
 
 	lv_label_set_text(info, b);

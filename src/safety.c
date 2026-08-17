@@ -40,8 +40,49 @@ static volatile struct safety_state *const state =
 #define IWDG_PRESCALER 6
 #define IWDG_RELOAD    1000
 
+#define RCC_CSR (*(volatile uint32_t *)0x40023874U)
+#define RCC_CSR_RMVF (1u << 24)
+
+static const char *reset_cause = "?";
+static bool starve_watchdog;
+
+static void capture_reset_cause(void)
+{
+	uint32_t csr = RCC_CSR;
+
+	/* Order matters: watchdog and software resets are the interesting ones, and
+	 * a power-on also sets BOR/PIN, so check the specific causes first. */
+	if (csr & (1u << 29)) {
+		reset_cause = "WATCHDOG";
+	} else if (csr & (1u << 30)) {
+		reset_cause = "wwdg";
+	} else if (csr & (1u << 28)) {
+		reset_cause = "software";
+	} else if (csr & (1u << 31)) {
+		reset_cause = "lowpower";
+	} else if (csr & (1u << 27)) {
+		reset_cause = "power-on";
+	} else if (csr & (1u << 26)) {
+		reset_cause = "nrst";
+	} else if (csr & (1u << 25)) {
+		reset_cause = "brownout";
+	}
+	RCC_CSR |= RCC_CSR_RMVF;   /* clear, so the next boot reports its own cause */
+}
+
+const char *safety_reset_cause(void)
+{
+	return reset_cause;
+}
+
+void safety_watchdog_selftest(void)
+{
+	starve_watchdog = true;
+}
+
 bool safety_boot_check(void)
 {
+	capture_reset_cause();
 	if (state->magic != SAFE_MAGIC) {
 		/* cold boot (or first run of this firmware) */
 		state->magic = SAFE_MAGIC;
@@ -84,5 +125,8 @@ void safety_watchdog_start(void)
 
 void safety_watchdog_feed(void)
 {
+	if (starve_watchdog) {
+		return;   /* self-test in progress: let it bite */
+	}
 	IWDG_KR = IWDG_KEY_FEED;
 }
