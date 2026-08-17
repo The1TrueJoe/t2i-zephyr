@@ -62,6 +62,23 @@ static inline void lcd_cmd(uint8_t c) { LCD_CMD_REG = c; }
 static inline void lcd_dat(uint8_t d) { LCD_DAT_REG = d; }
 static inline void lcd_reg(uint8_t c, uint8_t d) { LCD_CMD_REG = c; LCD_DAT_REG = d; }
 
+/* R00 reads back the device code, 0x0047 on a healthy HX8347. This is the one
+ * observation that splits a dark screen in two: a correct ID means the panel and
+ * the FSMC bus are alive and only the backlight is out, a wrong one means the
+ * panel itself did not come up. */
+static uint16_t panel_id;
+
+static void panel_read_id(void)
+{
+	LCD_CMD_REG = 0x00;
+	uint8_t hi = LCD_DAT_REG;
+	uint8_t lo = LCD_DAT_REG;
+
+	panel_id = (uint16_t)((hi << 8) | lo);
+}
+
+uint16_t hx8347_panel_id(void) { return panel_id; }
+
 /* HX8347 windowed access: cols (X) = regs 0x02-0x05, rows (Y) = regs 0x06-0x09. */
 static void lcd_window(int x0, int y0, int x1, int y1)
 {
@@ -179,24 +196,20 @@ static void lcd_hw_init(void)
 	 * with TIM2 already driving it, so the panel can be lit (showing power-up
 	 * noise) from the instant we start. Turning it off first, and only raising
 	 * it once the app has drawn a frame, is what removes the RGB grid. */
-	backlight_set(0);
+	/* Dark, but NEVER static: `backlight_set(0)` stops TIM2 and drives PA1 low,
+	 * which is the first entry in docs/BACKLIGHT.md's "always latches" table. A
+	 * cold boot got away with it because the driver is not powered yet, but after
+	 * a warm reset the driver is live and running, so a long static low goes
+	 * straight into it and latches it off — which is why reflashing needed a
+	 * manual power cycle while the panel itself answered on the bus perfectly.
+	 * 1% is the same "dark but still switching" value sleep uses, and it hides
+	 * the power-up noise just as well. */
+	backlight_set(1);
 
 	/* PC12 = backlight/boost rail enable. Stock drives it high in FUN_08021354
 	 * (output PP + pull-up). Without it both backlights stay dark even though
 	 * the PWMs run and the panel logic answers on the FSMC bus. */
-	/* Cycle the rail before bringing it up. The boost converter latches off
-	 * whenever its PWM dim input stops (docs/BACKLIGHT.md), and a CPU reset stops
-	 * it unavoidably — which is why a flash used to need a manual power cycle to
-	 * get the screen back. Dropping PC12 here is the same power cycle, done in
-	 * firmware: at this point nothing is on screen and the panel is about to be
-	 * reset and re-initialised anyway, so browning out the panel logic and the
-	 * battery monitor for 120 ms costs nothing.
-	 *
-	 * This is NOT safe to do anywhere but boot — see power.c. */
-	pin_out(GPIO_PORT_C, 12, 0);
-	k_msleep(120);
 	pin_out(GPIO_PORT_C, 12, 1);
-	k_msleep(50);
 
 	keypad_backlight_set(90);
 
@@ -214,6 +227,7 @@ static void lcd_hw_init(void)
 	pin_out(GPIO_PORT_D, 6, 0); k_msleep(20);
 	pin_out(GPIO_PORT_D, 6, 1); k_msleep(150);
 
+	panel_read_id();
 	panel_init();
 
 	/* Clear GRAM to black. The panel powers up holding noise, and the RTI

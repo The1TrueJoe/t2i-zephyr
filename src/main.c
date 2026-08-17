@@ -31,6 +31,8 @@
 #include "battery.h"
 #include "funlight.h"
 #include "ir.h"
+
+uint16_t hx8347_panel_id(void);
 #include "wake.h"
 #include "lowpower.h"
 
@@ -121,6 +123,13 @@ int main(void)
 	funlight_set(true, true, true, 100);
 	updater_emit("all three");
 	k_msleep(500);
+
+	{
+		char idb[32];
+
+		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
+		updater_emit(idb);
+	}
 
 	ir_init();
 	bool accel_ok = accel_init();

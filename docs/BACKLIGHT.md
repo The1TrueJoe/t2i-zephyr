@@ -79,6 +79,37 @@ Every way of stopping the PWM. All latch; all need a power cycle.
 
 ---
 
+## 4b. The boot path latched it too — found 2026-08-17
+
+Reflashing left the screen dark until a manual power cycle, and the cause was
+ours: `lcd_hw_init()` opened with `backlight_set(0)`, which stops TIM2 and drives
+PA1 push-pull low — **the first entry in the §3 table**. It stayed that way for
+the whole of boot (panel reset, `panel_init()`, GRAM clear) before anything
+raised it again.
+
+A cold boot survives it because the driver is not powered yet and never sees the
+static low. A warm reset does not: the driver is live and running, takes a
+multi-hundred-millisecond static low, and latches. Fixed by opening with
+`backlight_set(1)` instead — the same "dark but still switching" value sleep
+uses, which hides the power-up noise just as well.
+
+**Also ruled out on hardware:** cycling **PC12** at boot (low 120 ms, then low
+400 ms, then high) does *not* unlatch the converter. PC12 is a shared rail, not
+the driver's own supply — do not retry this.
+
+### The diagnostic that made it findable
+
+`hx8347_panel_id()` reads HX8347 **R00**, which returns the device code. Emitted
+over USB CDC at boot as `PANEL id=0x____`:
+
+- **`0x4747`** (the 8-bit bus returns `0x47` for both reads) — panel and FSMC are
+  alive, so a dark screen is **purely** the backlight
+- anything else — the panel itself did not come up
+
+This is the split to reach for first; it turns "the screen is dark" into one of
+two much smaller problems. It also proved the panel survives a warm reset
+untouched, which is what pointed at the backlight and nothing else.
+
 ## 5. `panel_init()` must NOT be called on wake
 
 While the panel is in standby (`STB=1`) the HX8347 accepts only two operations,
