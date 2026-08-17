@@ -26,4 +26,12 @@ bool updater_busy(void);
 uint32_t updater_received(void);
 uint32_t updater_declared(void);
 
+/* Emit a line of text to the host on the CDC.
+ *
+ * Shares the CDC with the update protocol, which is input-driven — the host only
+ * ever receives replies it asked for — so unsolicited event lines are safe while
+ * no update is running. Suppressed during an update so the two never interleave.
+ */
+void updater_emit(const char *line);
+
 #endif /* T2I_UPDATER_H */

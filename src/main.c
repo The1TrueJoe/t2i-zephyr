@@ -19,6 +19,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
+#include <stdio.h>
 #include "status.h"
 #include "ui.h"
 #include "power.h"
@@ -114,6 +115,7 @@ int main(void)
 		.reset_cause = safety_reset_cause(),
 	};
 	uint32_t beat = 0;
+	uint8_t last_reported_key = KEY_NONE;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -130,6 +132,22 @@ int main(void)
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();
+
+		/* Report key transitions to the host over USB CDC. This is the path to
+		 * publishing button presses without the radio: tools/t2i_mqtt_bridge.py
+		 * reads these lines and forwards them to MQTT. */
+		if (st.key != last_reported_key) {
+			char ev[48];
+
+			if (st.key != KEY_NONE) {
+				snprintf(ev, sizeof(ev), "KEY DOWN %u r%d c%d",
+					 st.key, st.key_row, st.key_col);
+			} else {
+				snprintf(ev, sizeof(ev), "KEY UP %u", last_reported_key);
+			}
+			updater_emit(ev);
+			last_reported_key = st.key;
+		}
 
 		/* debug key: hold to arm the watchdog self-test */
 		if (st.key == KEY_DEBUG) {

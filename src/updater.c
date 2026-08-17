@@ -241,6 +241,18 @@ static void usb_bringup(void)
 }
 
 
+void updater_emit(const char *line)
+{
+	if (active || !line) {
+		return;   /* never interleave with a firmware transfer */
+	}
+	for (const char *p = line; *p; p++) {
+		uart_poll_out(cdc, (unsigned char)*p);
+	}
+	uart_poll_out(cdc, '\r');
+	uart_poll_out(cdc, '\n');
+}
+
 bool updater_busy(void)      { return active; }
 uint32_t updater_received(void) { return recv_cnt; }
 uint32_t updater_declared(void) { return declared; }
