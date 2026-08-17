@@ -214,7 +214,13 @@ static void cdc_read(uint8_t *b, size_t n)
 		uint32_t k = ring_buf_get(&rx_rb, b + got, n - got);
 		got += k;
 		uart_irq_rx_enable(cdc);   /* re-arm if the ISR disabled it when full */
-		if (!k) { k_yield(); }
+		if (!k) {
+			/* Sleep rather than k_yield(): yielding busy-spins whenever no
+			 * other thread of >= priority is ready, which starves the rest
+			 * of the firmware while we wait for a host that may never
+			 * send anything. */
+			k_msleep(2);
+		}
 	}
 }
 
@@ -268,10 +274,11 @@ static void updater_thread(void *a, void *b, void *c)
 	}
 }
 
-/* Cooperative priority, so it outranks main and gets serviced even if main is
- * spinning. Learned the hard way: a busy-wait in main starved this thread
- * before USB could enumerate, which took out the only recovery path. It only
- * ever blocks on the CDC ring buffer, so it never hogs the CPU. */
+/* Preemptible, deliberately. A cooperative priority here starves main: this
+ * thread waits for CDC data by polling, and a cooperative thread that yields
+ * with nothing higher-priority ready simply gets the CPU straight back — the
+ * UI never advanced past its splash. Preemptible + a real sleep in the poll
+ * loop lets both make progress. */
 K_THREAD_STACK_DEFINE(updater_stack, 2048);
 static struct k_thread updater_tcb;
 
@@ -279,6 +286,6 @@ void updater_init(void)
 {
 	k_thread_create(&updater_tcb, updater_stack, K_THREAD_STACK_SIZEOF(updater_stack),
 			updater_thread, NULL, NULL, NULL,
-			K_PRIO_COOP(7), 0, K_NO_WAIT);
+			K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
 	k_thread_name_set(&updater_tcb, "usb-updater");
 }
