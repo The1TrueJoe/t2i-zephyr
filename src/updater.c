@@ -134,7 +134,11 @@ static void do_finalize(void)
 	if (cksum == 0) {
 		invalidate_internal_marker();
 		DBG(3) = 0x600DF00Du;
-		*(volatile uint32_t *)0xE000ED0C = 0x05FA0004u;   /* SYSRESETREQ */
+		/* Guaranteed reset: the bootloader commits the staged image on the way
+		 * back up. A bare SYSRESETREQ is not reliable here, and a missed reset
+		 * leaves the remote needing a manual power-cycle to finish its own
+		 * update — exactly the manual step we are trying to remove. */
+		safety_force_reset();   /* never returns */
 	}
 	active = false;
 }

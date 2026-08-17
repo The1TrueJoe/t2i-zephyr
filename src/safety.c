@@ -131,6 +131,27 @@ void safety_watchdog_start(void)
 	IWDG_KR = IWDG_KEY_FEED;
 }
 
+void safety_force_reset(void)
+{
+	/* Shorten the watchdog to ~0.25ms so the fallback is immediate rather than
+	 * an 8 second wait, then stop feeding it. */
+	IWDG_KR = IWDG_KEY_START;    /* ensure it is running even if never started */
+	IWDG_KR = IWDG_KEY_ACCESS;
+	IWDG_PR = 0;                 /* /4 */
+	IWDG_RLR = 1;
+	starve_watchdog = true;
+
+	/* Preferred path: a clean system reset request. */
+	*(volatile uint32_t *)0xE000ED0CU = 0x05FA0004U;
+	__asm__ volatile ("dsb" ::: "memory");
+
+	/* If that was ignored — which happens on this unit — the starved watchdog
+	 * takes us down regardless. */
+	for (;;) {
+		__asm__ volatile("nop");
+	}
+}
+
 void safety_watchdog_feed(void)
 {
 	if (starve_watchdog) {

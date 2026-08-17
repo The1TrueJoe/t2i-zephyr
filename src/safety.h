@@ -58,4 +58,13 @@ const char *safety_reset_cause(void);
  * A safety net nobody has seen work is not a safety net. */
 void safety_watchdog_selftest(void);
 
+/* Reset the remote, and actually mean it. SYSRESETREQ is unreliable on this
+ * hardware (dead NRST), so this asks nicely first and then guarantees the reset
+ * by starving a deliberately-shortened watchdog. Never returns.
+ *
+ * This is what a USB firmware update calls once the image is staged: if the
+ * reset were skipped, the remote would sit with an invalidated boot marker and
+ * a pending image until someone pulled the battery. */
+void safety_force_reset(void);
+
 #endif /* T2I_SAFETY_H */
