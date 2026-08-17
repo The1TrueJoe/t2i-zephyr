@@ -6,7 +6,6 @@
 #include "power.h"
 #include "wake.h"
 #include "lowpower.h"
-#include "backlight.h"
 
 /* Power-path markers, readable over SWD while the screen is dark:
  *   0x2001FF8C  asleep flag
@@ -24,10 +23,8 @@
  * battery monitor, so taking it low browns out the display and lights the
  * low-battery indicator. Backlight off is done at the timer/pin instead. */
 #define BRIGHT_AWAKE  128
+#define AWAKE_PCT     50   /* same level, expressed for the ramp */
 
-/* Keypad backlight while awake. Off during sleep — glowing keys on a sleeping
- * remote are both wrong-looking and a real current draw. */
-#define KEYPAD_AWAKE 90
 /* "Off" is the smallest non-zero duty, not 0.
  *
  * Stock RTI drives its backlight fully off (TIM2 disabled, PA1 low) and we
@@ -86,6 +83,33 @@ const char *power_woke_by(void) { return woke_by; }
 uint32_t power_wakes(void)      { return wake_count_total; }
 bool power_asleep(void)         { return asleep; }
 
+/* Ramp the backlight instead of stepping it.
+ *
+ * Stock RTI never changes brightness abruptly: its Backlight Task walks the
+ * level in increments of 7 (FUN_0801a96c), calling the LCD and keypad setters
+ * with every intermediate value. Jumping straight to the timer-off/pin-low
+ * endpoint is what this driver IC does not recover from — dimming works, but a
+ * step to 0 stays dark until power is removed. Walking down the same way stock
+ * does reaches a genuinely dark screen and still comes back.
+ */
+#define RAMP_STEP   7
+#define RAMP_PAUSE_MS 15
+
+static void backlight_ramp(int from_pct, int to_pct)
+{
+	int v = from_pct;
+
+	while (v != to_pct) {
+		if (v < to_pct) {
+			v = (v + RAMP_STEP > to_pct) ? to_pct : v + RAMP_STEP;
+		} else {
+			v = (v - RAMP_STEP < to_pct) ? to_pct : v - RAMP_STEP;
+		}
+		display_set_brightness(display, (uint8_t)(v * 255 / 100));
+		k_msleep(RAMP_PAUSE_MS);
+	}
+}
+
 bool power_tick(bool activity, const char *source)
 {
 	if (activity) {
@@ -99,8 +123,7 @@ bool power_tick(bool activity, const char *source)
 			woke_by = source ? source : "?";
 			wake_count_total++;
 			display_blanking_off(display);   /* panel back on */
-			keypad_backlight_set(KEYPAD_AWAKE);
-			display_set_brightness(display, BRIGHT_AWAKE);
+			backlight_ramp(0, AWAKE_PCT);    /* walk up, as stock does */
 			PMARK(0x04, BRIGHT_AWAKE);
 			asleep = false;
 			PMARK(0x00, 0);
@@ -109,8 +132,8 @@ bool power_tick(bool activity, const char *source)
 		}
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
+		backlight_ramp(AWAKE_PCT, 0);    /* walk down before the endpoint */
 		display_blanking_on(display);    /* panel off = truly black, like stock */
-		keypad_backlight_set(0);
 		PMARK(0x04, 0);
 		asleep = true;
 		PMARK(0x00, 1);
