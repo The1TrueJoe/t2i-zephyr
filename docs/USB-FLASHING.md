@@ -43,6 +43,37 @@ stops enumerating USB. Three layers exist to prevent that, all in
 A power cycle clears the counter, which is intended: pulling the battery gives a
 clean slate.
 
+## The boundary, measured 2026-08-17
+
+`BRICK_TEST 2` hangs in `while (1)` immediately after `safety_boot_check()` —
+i.e. **before** `updater_init()`. Result: the CDC port **never enumerated**,
+checked every 10 s for a full minute. The watchdog reset the remote endlessly and
+no boot ever brought USB up, so safe mode was unreachable. Recovered over SWD,
+which writes to `0x08004000` and never touches the RTI bootloader at
+`0x08000000`.
+
+So the boundary is exactly where it looks:
+
+| Fails where | Recoverable over USB? |
+|---|---|
+| After `updater_init()` — application code, drivers you start yourself, radio | **Yes** — hard fault included, verified |
+| Before `updater_init()` — `reset_hook.c`, kernel init, Zephyr driver init | **No** — SWD only |
+
+**Practical rule for new subsystems, including the radio: initialise it from
+`main`, after `updater_init()`.** Never from a Zephyr driver-init hook or
+`SYS_INIT` at `POST_KERNEL`, because those run before USB exists and put you in
+the bottom row of that table.
+
+### Attempted and reverted: deferring the display
+
+Moving `lcd_hw_init()` after `updater_init()` via `zephyr,deferred-init` +
+`device_init()` looked like the obvious way to shrink the pre-USB window — it is
+the largest piece of our own code that runs there, and it holds PC12 low for 3 s.
+**It broke boot** (remote came up silent in safe mode, no banner). The Zephyr LVGL
+module has its own pre-`main` init that acquires the display device, so deferring
+the display pulls the rug out from under it. Reverted. Anyone retrying this has to
+defer the LVGL module too.
+
 ### Residual risk, stated honestly
 
 A fault **before** `safety_boot_check()` runs is not covered by any of the above:

@@ -132,6 +132,7 @@ int main(void)
 
 	const struct device *disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 
+
 	if (!device_is_ready(disp)) {
 		safe_mode();   /* no screen, but USB is live — still recoverable */
 	}
