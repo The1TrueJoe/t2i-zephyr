@@ -10,6 +10,7 @@
  * triggers diagnostics rather than any normal remote function. */
 #define KEY_DEBUG 180
 #define IR_TEST_KEY 149   /* Record */
+#define KEY_INFO    144
 
 /* 8x7 matrix: columns PC0-7 (driven), rows PE0/1/2/12-15 (sensed, active low). */
 void keypad_init(void);

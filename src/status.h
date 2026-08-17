@@ -33,6 +33,7 @@ struct t2i_status {
 
 	/* power / sleep */
 	bool     asleep;
+	bool     debug;                          /* Info key toggles the full dump */
 	bool     recovery;                       /* held a key at boot: never sleeps */
 	uint32_t wakes;
 	uint32_t wake_irqs;

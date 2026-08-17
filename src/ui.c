@@ -140,7 +140,7 @@ void ui_init(const struct device *disp, uint32_t splash_ms)
 	lv_obj_set_style_text_color(scr, lv_color_white(), 0);
 
 	lv_obj_t *title = lv_label_create(scr);
-	lv_label_set_text(title, "T2i bring-up");
+	lv_label_set_text(title, "T2i");
 	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
 	info = lv_label_create(scr);
@@ -171,6 +171,15 @@ void ui_render(const struct t2i_status *st)
 		 * host is mid-transfer, so show only that. */
 		snprintf(b, sizeof(b), "USB UPDATE\n\n%u / %u bytes\n\ndo not disconnect",
 			 st->usb_received, st->usb_declared);
+	} else if (!st->debug) {
+		/* Everything that was on the bring-up screen is still one Info press
+		 * away — it just is not what you want to look at once it all works. */
+		snprintf(b, sizeof(b),
+			 "key %d %s\n\nbatt %d%s\n\n%s\n\nInfo = debug%s",
+			 st->key == 0xFF ? -1 : st->key, st->key_name ? st->key_name : "-",
+			 st->batt_raw, st->batt_low ? " LOW" : "",
+			 st->asleep ? "ASLEEP" : "awake",
+			 st->recovery ? "\nRECOVERY (no sleep)" : "");
 	} else {
 		snprintf(b, sizeof(b),
 			 "touch %s\n raw %d,%d z%d\n X %d-%d\n Y %d-%d\n\n"

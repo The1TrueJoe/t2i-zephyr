@@ -10,6 +10,10 @@ int  touch_read(int *x, int *y, int *z);
 
 void beep_init(void);
 void beep_click(void);
+
+/* Retune the click. The right value depends on the transducer's resonance, which
+ * is not in the decomp — sweep this if the click sounds wrong. */
+void beep_set_hz(int hz);
 void beep_test(void);   /* boot self-test: two audible beeps */
 
 #endif /* T2I_TOUCH_H */

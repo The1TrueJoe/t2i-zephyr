@@ -44,6 +44,7 @@
  * feeding stops, and the remote should reset itself ~8s later with the reason
  * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
  * assuming it does. */
+#define LED_DEBOUNCE 4   /* main-loop passes a charger state must hold */
 #define DEBUG_HOLD_MS 3000
 
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
@@ -106,6 +107,21 @@ int main(void)
 	ui_touch_indev_init();
 	battery_init();
 	funlight_init();
+
+	/* Boot sweep: light each channel in turn, then all three. Which physical
+	 * colour each channel drives is not in the decomp, so this is how they get
+	 * labelled — the name printed over USB is the channel that is lit. */
+	static const char *const fl_ch[3] = { "ch0", "ch1", "ch2" };
+
+	for (int c = 0; c < 3; c++) {
+		funlight_set(c == 0, c == 1, c == 2, 100);
+		updater_emit(fl_ch[c]);
+		k_msleep(500);
+	}
+	funlight_set(true, true, true, 100);
+	updater_emit("all three");
+	k_msleep(500);
+
 	ir_init();
 	bool accel_ok = accel_init();
 	bool wake_ok = wake_init();
@@ -122,7 +138,7 @@ int main(void)
 	};
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
-	int last_led = -1;
+	int last_led = -1, led_pending = -1, led_stable = 0;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -156,6 +172,11 @@ int main(void)
 			}
 			updater_emit(ev);
 			last_reported_key = st.key;
+
+			/* Info toggles the full bring-up dump. */
+			if (st.key == KEY_INFO) {
+				st.debug = !st.debug;
+			}
 
 			/* IR check: no code database exists yet, so Record transmits a
 			 * plain NEC frame — the smallest thing that proves the carrier,
@@ -221,7 +242,23 @@ int main(void)
 		 * no part number appears near this code — so these are channel
 		 * indices, to be labelled once observed on hardware.
 		 * Only written on change: a frame locks interrupts for ~3ms. */
-		int led = st.charger ? (st.charge_state == 2 ? 1 : 2) : 0;
+		/* On battery the indicator stays dark unless the pack is actually low.
+		 * Stock has a third state here, but a permanently lit LED on a remote
+		 * that spends its life asleep is not worth the drain. */
+		int led = st.charger ? (st.charge_state == 2 ? 1 : 2) : (st.batt_low ? 0 : -1);
+
+		/* The charger GPIOs chatter, which showed up as the indicator flipping
+		 * colour at random. Only act on a state that has held for a few passes. */
+		if (led != led_pending) {
+			led_pending = led;
+			led_stable = 0;
+		} else if (led_stable < LED_DEBOUNCE) {
+			led_stable++;
+		}
+		if (led_stable < LED_DEBOUNCE) {
+			led = last_led;
+		}
+
 		if (led != last_led) {
 			funlight_set(led == 1, led == 2, led == 0, 40);
 			last_led = led;

@@ -184,7 +184,19 @@ static void lcd_hw_init(void)
 	/* PC12 = backlight/boost rail enable. Stock drives it high in FUN_08021354
 	 * (output PP + pull-up). Without it both backlights stay dark even though
 	 * the PWMs run and the panel logic answers on the FSMC bus. */
+	/* Cycle the rail before bringing it up. The boost converter latches off
+	 * whenever its PWM dim input stops (docs/BACKLIGHT.md), and a CPU reset stops
+	 * it unavoidably — which is why a flash used to need a manual power cycle to
+	 * get the screen back. Dropping PC12 here is the same power cycle, done in
+	 * firmware: at this point nothing is on screen and the panel is about to be
+	 * reset and re-initialised anyway, so browning out the panel logic and the
+	 * battery monitor for 120 ms costs nothing.
+	 *
+	 * This is NOT safe to do anywhere but boot — see power.c. */
+	pin_out(GPIO_PORT_C, 12, 0);
+	k_msleep(120);
 	pin_out(GPIO_PORT_C, 12, 1);
+	k_msleep(50);
 
 	keypad_backlight_set(90);
 

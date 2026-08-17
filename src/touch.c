@@ -121,8 +121,14 @@ int touch_read(int *x, int *y, int *z)
  * for 20ms per key click by its "Buzzer Task": TIM4 tick = 60MHz/120 = 500kHz,
  * ARR 1249 -> 400 Hz. There is no DAC and no sample playback anywhere in stock.
  */
-#define BEEP_PSC 119        /* 60 MHz / 120 = 500 kHz */
-#define BEEP_ARR 1249       /* 500 kHz / 1250 = 400 Hz */
+/* Stock clicks at 400 Hz, but 20 ms of 400 Hz is only 8 cycles and on this unit
+ * it reads as a rattle rather than a click. The transducer's own resonance is
+ * what decides how it sounds, so leave the knob: BEEP_HZ / BEEP_MS are the two
+ * numbers to turn. TIM4 ticks at 60 MHz / 120 = 500 kHz. */
+#define BEEP_HZ 2700        /* stock: 400. most small buzzers peak near 2.7 kHz */
+#define BEEP_MS 20          /* stock: 20 ms per key click */
+#define BEEP_TICK 500000
+#define BEEP_PSC 119
 
 void beep_init(void)
 {
@@ -137,11 +143,19 @@ void beep_init(void)
 				 | (2u << (7 * 4));
 
 	TIM4_PSC  = BEEP_PSC;
-	TIM4_ARR  = BEEP_ARR;
-	TIM4_CCR2 = BEEP_ARR / 2;               /* 50% */
+	beep_set_hz(BEEP_HZ);
 	TIM4_CCMR1 = (6u << 12) | (1u << 11);   /* OC2M = PWM1, OC2PE */
 	TIM4_CCER  = (1u << 4);                 /* CC2E */
 	TIM4_EGR   = TIM_EGR_UG;
+}
+
+void beep_set_hz(int hz)
+{
+	uint32_t arr = (hz > 0) ? (BEEP_TICK / (uint32_t)hz) - 1u : 1249u;
+
+	TIM4_ARR  = arr;
+	TIM4_CCR2 = arr / 2;                    /* 50% */
+	TIM4_EGR  = TIM_EGR_UG;
 }
 
 static void beep_tone(int ms)
@@ -151,7 +165,7 @@ static void beep_tone(int ms)
 	TIM4_CR1 = 0;
 }
 
-void beep_click(void) { beep_tone(20); }   /* stock: 20ms per key click */
+void beep_click(void) { beep_tone(BEEP_MS); }
 
 void beep_test(void)
 {
