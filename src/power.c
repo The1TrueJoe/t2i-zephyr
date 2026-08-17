@@ -12,14 +12,13 @@
 
 /* Backlight levels, 0..255.
  *
- * ASLEEP is deliberately a few percent rather than 0: this panel's backlight
- * driver latches into shutdown when its PWM input sits low, and does not
- * restart from restoring the duty cycle or reconfiguring the pin. Cycling its
- * enable (PC12) would restart it, but that rail also feeds the panel logic and
- * the battery monitor — dropping it browns out the display and lights the
- * low-battery indicator. So a low duty is the real floor for "off" here. */
+ * Never drop PC12 to save power: that rail also feeds the panel logic and the
+ * battery monitor, so taking it low browns out the display and lights the
+ * low-battery indicator. Backlight off is done at the timer/pin instead. */
 #define BRIGHT_AWAKE  128
-#define BRIGHT_ASLEEP 8
+/* 0 is now genuinely off and genuinely recoverable, matching how stock RTI
+ * drives this backlight. */
+#define BRIGHT_ASLEEP 0
 
 /* STM32 STOP mode instead of WFI while asleep: ~0.5mA against ~15-25mA, but a
  * stopped CPU has not proven attachable over SWD on this board even with

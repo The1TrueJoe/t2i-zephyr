@@ -8,6 +8,10 @@
 #include <string.h>
 #include "ui.h"
 #include "touch.h"
+#include "safety.h"
+
+/* fine-grained boot markers: read 0x2001FF88 over SWD to see where ui_init got */
+#define UIMARK(v) (*(volatile uint32_t *)0x2001FF88 = (uint32_t)(v))
 
 extern const lv_image_dsc_t juno_logo;   /* src/juno_logo.c */
 
@@ -101,26 +105,35 @@ void ui_init(const struct device *disp, uint32_t splash_ms)
 {
 	/* Backlight stays off until a full frame exists: the panel powers up
 	 * holding noise, and lighting it first shows an RGB grid of it. */
+	UIMARK(1);
 	display_blanking_on(disp);
+	UIMARK(2);
 
 	scr = lv_scr_act();
 	lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
+	UIMARK(3);
 	lv_obj_t *logo = lv_image_create(scr);
 	lv_image_set_src(logo, &juno_logo);
 	lv_obj_center(logo);
+	UIMARK(4);
 
 	lv_refr_now(NULL);
+	UIMARK(5);
 	display_blanking_off(disp);
 	display_set_brightness(disp, BRIGHT_AWAKE);
+	UIMARK(6);
 
 	/* Hold the splash. This also *is* the boot flash-window — the CPU stays
 	 * awake and easy for SWD to catch before any sleeping starts. */
 	for (uint32_t i = 0; i < splash_ms / 50; i++) {
+		safety_watchdog_feed();   /* 3s with no feed would otherwise trip it */
 		lv_timer_handler();
 		k_busy_wait(50000);
 	}
+	UIMARK(7);
 	lv_obj_delete(logo);
+	UIMARK(8);
 
 	/* Black background suits a remote; text colour is inherited, so setting it
 	 * on the screen covers every label. */
@@ -133,6 +146,7 @@ void ui_init(const struct device *disp, uint32_t splash_ms)
 	info = lv_label_create(scr);
 	lv_label_set_text(info, "starting...");
 	lv_obj_align(info, LV_ALIGN_TOP_LEFT, 6, 40);
+	UIMARK(9);
 }
 
 void ui_render(const struct t2i_status *st)

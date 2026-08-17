@@ -76,17 +76,36 @@ static void panel_init(void)
 }
 
 /* LCD backlight on PA1 = TIM2_CH2. pct 0..100. PWM mode 2, active-low (RTI). */
+/* LCD backlight on PA1 = TIM2_CH2, following stock RTI's FunLight backlight
+ * setter (FUN_0801a9fa) exactly, because the endpoints matter:
+ *
+ *   0    -> TIM2 DISABLED, PA1 driven LOW as plain GPIO  (genuinely off)
+ *   100  -> TIM2 DISABLED, PA1 driven HIGH as plain GPIO (full brightness)
+ *   else -> PWM mode 2 on PA1
+ *
+ * Leaving the timer running while parking the pin, or restoring duty without
+ * re-initialising the output compare, does not reliably bring the light back —
+ * which is why "off" previously became "off permanently". Stock disables the
+ * timer at both endpoints and rebuilds the PWM on the way out, so we do too.
+ */
 static void backlight_set(int pct)
 {
 	if (pct < 0) pct = 0; if (pct > 100) pct = 100;
 	RCC_APB1ENR |= (1u << 0);                /* TIM2EN */
-	pin_af(GPIO_PORT_A, 1, 1);               /* PA1 -> AF1 = TIM2_CH2 */
+
+	if (pct == 0 || pct == 100) {
+		TIM2_CR1 = 0;                    /* stop the timer first */
+		pin_out(GPIO_PORT_A, 1, pct ? 1 : 0);
+		return;
+	}
+
 	TIM2_PSC  = 0;
 	TIM2_ARR  = BL_ARR;
 	TIM2_CCR2 = (uint32_t)pct * BL_ARR / 100;
 	TIM2_CCMR1 = 0x7800;                     /* OC2M = PWM mode 2 + OC2PE */
-	TIM2_CCER  = 0x30;                        /* CC2E + CC2P (active-low) */
-	TIM2_EGR   = TIM_EGR_UG;                  /* latch preload */
+	TIM2_CCER  = 0x30;                       /* CC2E + CC2P (active-low) */
+	TIM2_EGR   = TIM_EGR_UG;                 /* latch preload */
+	pin_af(GPIO_PORT_A, 1, 1);               /* PA1 -> AF1 = TIM2_CH2 */
 	TIM2_CR1   = TIM_CR1_CEN;
 }
 
@@ -204,7 +223,7 @@ static int hx8347_blanking_off(const struct device *dev)
 static int hx8347_blanking_on(const struct device *dev)
 {
 	ARG_UNUSED(dev);
-	pin_out(GPIO_PORT_A, 1, 0);      /* backlight off, and stays off in STOP */
+	backlight_set(0);                /* timer off + PA1 low: really off */
 	return 0;
 }
 
