@@ -135,15 +135,12 @@ void beep_init(void)
 	RCC_AHB1ENR |= RCC_AHB1ENR_GPIO(GPIO_PORT_B);
 	RCC_APB1ENR |= (1u << 2);       /* TIM4EN */
 
-	/* PB7 -> AF2 = TIM4_CH2 */
-	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << (7 * 2)))
-				  | (GPIO_MODE_AF << (7 * 2));
 	GPIO_OSPEEDR(GPIO_PORT_B) |= (3u << (7 * 2));
 	GPIO_AFRL(GPIO_PORT_B) = (GPIO_AFRL(GPIO_PORT_B) & ~(0xFu << (7 * 4)))
-				 | (2u << (7 * 4));
+				 | (2u << (7 * 4));      /* PB7 AF2 = TIM4_CH2 */
+	beep_park();
 
 	TIM4_PSC  = BEEP_PSC;
-	TIM4_CCR2 = 0;                          /* silent until beep_tone raises it */
 	beep_set_hz(BEEP_HZ);
 	TIM4_CCMR1 = (6u << 12) | (1u << 11);   /* OC2M = PWM1, OC2PE */
 	TIM4_CCER  = (1u << 4);                 /* CC2E */
@@ -152,6 +149,8 @@ void beep_init(void)
 
 static uint32_t beep_arr = 1249;
 
+static void beep_park(void);
+
 void beep_set_hz(int hz)
 {
 	beep_arr = (hz > 0) ? (BEEP_TICK / (uint32_t)hz) - 1u : 1249u;
@@ -159,17 +158,28 @@ void beep_set_hz(int hz)
 	TIM4_EGR = TIM_EGR_UG;
 }
 
-/* Idle must leave PB7 LOW. With CC2E on and the timer stopped the counter sits
- * at 0, so any non-zero CCR2 holds the output HIGH in PWM1 mode — DC across the
- * transducer, which is a constant hum, not silence. CCR2 = 0 is never active. */
+/* Idle must leave PB7 LOW, and the timer cannot be trusted to do it: with the
+ * counter parked at 0 any non-zero CCR2 holds the output HIGH in PWM1 mode, and
+ * OC2PE means writing CCR2 = 0 does nothing until an update event — which never
+ * arrives once the timer is stopped. That is DC across the transducer, i.e. a
+ * constant hum. Handing the pin back to the GPIO block is unambiguous. */
+static void beep_park(void)
+{
+	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << (7 * 2)))
+				  | (GPIO_MODE_OUTPUT << (7 * 2));
+	GPIO_BSRR(GPIO_PORT_B) = 1u << (7 + 16);
+}
+
 static void beep_tone(int ms)
 {
 	TIM4_CCR2 = beep_arr / 2;               /* 50% */
 	TIM4_EGR  = TIM_EGR_UG;
+	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << (7 * 2)))
+				  | (GPIO_MODE_AF << (7 * 2));
 	TIM4_CR1  = TIM_CR1_CEN;
 	k_msleep(ms);
 	TIM4_CR1  = 0;
-	TIM4_CCR2 = 0;
+	beep_park();
 }
 
 void beep_click(void) { beep_tone(BEEP_MS); }
