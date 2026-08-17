@@ -238,17 +238,44 @@ static void hx8347_get_caps(const struct device *dev, struct display_capabilitie
  * is a shared rail — dropping it lights the low-battery indicator and cuts the
  * panel's logic supply, so the HX8347 loses its init and no amount of backlight
  * brings the image back. */
-static int hx8347_blanking_off(const struct device *dev)
-{
-	ARG_UNUSED(dev);
-	backlight_set(50);               /* re-establishes AF + PWM on PA1 */
-	return 0;
-}
-
+/* Panel power down/up — stock RTI's exact sequence, verified in the decomp
+ * (the LCD control switch at FUN_0800fb2c, cases 6 and 5, both gated on the
+ * panel ID reading 0x47 as ours does).
+ *
+ * This is how stock gets a genuinely black screen in sleep. It is NOT just the
+ * display-on bit: it walks the HX8347's power control down (0x1F) and stops the
+ * panel oscillator (0x19), then reverses that on the way back up.
+ *
+ * Doing it this way also sidesteps the backlight entirely. Driving the backlight
+ * to a static 0 blanks the screen but this driver IC does not recover from it
+ * without losing power; with the panel powered down there is nothing to see
+ * anyway, so the backlight can stay at a low duty and keep receiving pulses.
+ */
 static int hx8347_blanking_on(const struct device *dev)
 {
 	ARG_UNUSED(dev);
-	backlight_set(0);                /* timer off + PA1 low: really off */
+
+	lcd_reg(0x28, 0x38); k_msleep(40);   /* display off */
+	lcd_reg(0x28, 0x20); k_msleep(5);
+	lcd_reg(0x1F, 0xA9); k_msleep(5);    /* power control down */
+	lcd_reg(0x19, 0x00);                 /* oscillator off */
+	backlight_set(1);                    /* minimum, but never static */
+	return 0;
+}
+
+static int hx8347_blanking_off(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+
+	lcd_reg(0x19, 0x01); k_msleep(6);    /* oscillator on */
+	lcd_reg(0x1F, 0xAC); k_msleep(5);
+	lcd_reg(0x1F, 0xA4); k_msleep(5);
+	lcd_reg(0x1F, 0xB4); k_msleep(5);
+	lcd_reg(0x1F, 0xF4); k_msleep(5);
+	lcd_reg(0x1F, 0xD4); k_msleep(5);    /* power control back up */
+	lcd_reg(0x28, 0x38); k_msleep(5);
+	lcd_reg(0x28, 0x3C);                 /* display on */
+	backlight_set(50);
 	return 0;
 }
 

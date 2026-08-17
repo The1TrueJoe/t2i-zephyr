@@ -159,8 +159,16 @@ int main(void)
 		const char *source = touched ? "touch"
 					     : (st.key != KEY_NONE ? "KEY" : "motion");
 
+		bool was_asleep = power_asleep();
+
 		if (power_tick(activity, source)) {
 			continue;   /* asleep: power_tick already blocked for us */
+		}
+
+		if (was_asleep) {
+			/* Just woke: the panel was powered down, so its framebuffer is
+			 * gone and LVGL would otherwise repaint nothing. */
+			ui_invalidate();
 		}
 
 		accel_read(&st.accel_x, &st.accel_y, &st.accel_z);

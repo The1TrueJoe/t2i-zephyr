@@ -149,6 +149,11 @@ void ui_init(const struct device *disp, uint32_t splash_ms)
 	UIMARK(9);
 }
 
+void ui_invalidate(void)
+{
+	lv_obj_invalidate(lv_scr_act());
+}
+
 void ui_render(const struct t2i_status *st)
 {
 	char b[192];

@@ -22,6 +22,11 @@ void ui_init(const struct device *disp, uint32_t splash_ms);
 /* Register the resistive panel as an LVGL pointer device. */
 void ui_touch_indev_init(void);
 
+/* Force a full repaint. The panel loses its framebuffer when powered down for
+ * sleep, so everything must be redrawn on wake — LVGL only paints what it
+ * believes changed. */
+void ui_invalidate(void);
+
 /* Redraw the readout and pump LVGL. */
 void ui_render(const struct t2i_status *st);
 

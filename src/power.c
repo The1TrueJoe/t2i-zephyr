@@ -73,6 +73,7 @@ bool power_tick(bool activity, const char *source)
 		if (activity) {
 			woke_by = source ? source : "?";
 			wake_count_total++;
+			display_blanking_off(display);   /* panel back on */
 			display_set_brightness(display, BRIGHT_AWAKE);
 			PMARK(0x04, BRIGHT_AWAKE);
 			asleep = false;
@@ -82,8 +83,8 @@ bool power_tick(bool activity, const char *source)
 		}
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
-		display_set_brightness(display, BRIGHT_ASLEEP);
-		PMARK(0x04, BRIGHT_ASLEEP);
+		display_blanking_on(display);    /* panel off = truly black, like stock */
+		PMARK(0x04, 0);
 		asleep = true;
 		PMARK(0x00, 1);
 	}
