@@ -64,7 +64,7 @@ low with a pull-up on Y+ and sense Y+ (cross-plate, so a press shorts it low).
 | Pin | Timer | Function |
 |---|---|---|
 | PC8 | TIM8_CH3 | **Keypad backlight** ✅ confirmed (ARR=300, CCR3~79, active-low) |
-| PA1 | TIM2_CH2 | **LCD backlight** ✅ confirmed — PWM-dimming input to a backlight driver IC, PWM mode 2, active-low. CCR2/ARR = brightness (driver regulates LED current → duty only changes brightness, cannot over-volt). We run **~30 kHz** (ARR=2000, CCR2=1000=50%) to stay inaudible; the ~2 kHz we first read was RTI's idle/dimmed register state and made the boost whine. |
+| PA1 | TIM2_CH2 | **LCD backlight** ✅ confirmed — PWM-dimming input to a backlight driver IC, PWM mode 2, active-low. CCR2/ARR = brightness (driver regulates LED current → duty only changes brightness, cannot over-volt). **Stock runs it at 2 kHz** — confirmed from `FUN_0801a9fa`, which computes prescaler `(SysClk/2)/6000000-1 = 9` (6 MHz timer), period 3000, pulse `pct*30`. An earlier note here claimed 2 kHz was merely RTI's idle state and that we should use 30 kHz; that was wrong. 30 kHz makes low duty cycles unusable (1% = 333 ns, below the driver's response) and appears to drop the converter into a shutdown that only a power cycle clears. |
 | PA0 | TIM5_CH1 | PWM — purpose TBD (driving it lit nothing) |
 
 ## LCD (screen)

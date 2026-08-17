@@ -7,6 +7,13 @@
 #include "wake.h"
 #include "lowpower.h"
 
+/* Power-path markers, readable over SWD while the screen is dark:
+ *   0x2001FF8C  asleep flag
+ *   0x2001FF90  last brightness applied
+ *   0x2001FF94  wake count
+ *   0x2001FF98  activity seen this tick (bit0) */
+#define PMARK(off, v) (*(volatile uint32_t *)(0x2001FF8C + (off)) = (uint32_t)(v))
+
 /* Idle this long with no touch, key or motion before sleeping. */
 #define SLEEP_AFTER_MS 30000
 
@@ -60,18 +67,25 @@ bool power_tick(bool activity, const char *source)
 		last_active = k_uptime_get();
 	}
 
+	PMARK(0x0C, activity ? 1 : 0);
+
 	if (asleep) {
 		if (activity) {
 			woke_by = source ? source : "?";
 			wake_count_total++;
 			display_set_brightness(display, BRIGHT_AWAKE);
+			PMARK(0x04, BRIGHT_AWAKE);
 			asleep = false;
+			PMARK(0x00, 0);
+			PMARK(0x08, wake_count_total);
 			return false;
 		}
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
 		display_set_brightness(display, BRIGHT_ASLEEP);
+		PMARK(0x04, BRIGHT_ASLEEP);
 		asleep = true;
+		PMARK(0x00, 1);
 	}
 
 	if (!asleep) {

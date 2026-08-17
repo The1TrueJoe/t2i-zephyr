@@ -21,10 +21,28 @@
 #define PANEL_W 240
 #define PANEL_H 320
 
-/* Backlight PWM: run at ~30 kHz (inaudible). TIM2 clock = 60 MHz, so
- * 60 MHz / BL_ARR = 30 kHz. Stock RTI's screen-on backlight is inaudible too;
- * the ~2 kHz we first copied was its idle/dimmed register state and whined. */
-#define BL_ARR 2000
+/* Backlight PWM frequency is chosen dynamically from the duty cycle.
+ *
+ * Two conflicting constraints:
+ *   - the driver IC needs an ON pulse of roughly >=5us. Below that it produces
+ *     no light and can drop into a shutdown only a power cycle clears. Stock
+ *     RTI avoids this by running at 2 kHz (FUN_0801a9fa: 6 MHz timer / 3000),
+ *     where even 1% duty is a 5us pulse.
+ *   - 2 kHz is audible, and the boost converter whines at it.
+ *
+ * Since pulse = duty x period, a low frequency is only *needed* at low duty.
+ * So: pick the highest frequency that still keeps the pulse >= BL_MIN_PULSE_US,
+ * capped at an inaudible 30 kHz. Normal brightness therefore runs silently at
+ * 30 kHz, and only the very dim end drops toward stock's 2 kHz — where the LED
+ * current, and hence the whine, is smallest anyway.
+ *
+ *   duty 50%  -> 30 kHz (16us pulse)      duty 5%  -> 10 kHz (5us)
+ *   duty 15%  -> 30 kHz (5us)             duty 1%  ->  2 kHz (5us)
+ */
+#define BL_MIN_PULSE_US 5
+#define BL_MAX_HZ       30000    /* inaudible */
+#define BL_MIN_HZ       2000     /* stock RTI */
+#define BL_TIMER_HZ     60000000 /* TIM2 clock with PSC = 0 */
 
 static void pin_af(int port, int pin, int af)
 {
@@ -99,9 +117,16 @@ static void backlight_set(int pct)
 		return;
 	}
 
+	/* highest frequency whose ON pulse still clears BL_MIN_PULSE_US */
+	uint32_t hz = (uint32_t)pct * (1000000u / BL_MIN_PULSE_US) / 100u;
+	if (hz > BL_MAX_HZ) { hz = BL_MAX_HZ; }
+	if (hz < BL_MIN_HZ) { hz = BL_MIN_HZ; }
+
+	uint32_t arr = BL_TIMER_HZ / hz;       /* TIM2 is 32-bit, so this always fits */
+
 	TIM2_PSC  = 0;
-	TIM2_ARR  = BL_ARR;
-	TIM2_CCR2 = (uint32_t)pct * BL_ARR / 100;
+	TIM2_ARR  = arr;
+	TIM2_CCR2 = (uint32_t)pct * arr / 100u;
 	TIM2_CCMR1 = 0x7800;                     /* OC2M = PWM mode 2 + OC2PE */
 	TIM2_CCER  = 0x30;                       /* CC2E + CC2P (active-low) */
 	TIM2_EGR   = TIM_EGR_UG;                 /* latch preload */
