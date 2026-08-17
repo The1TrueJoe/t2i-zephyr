@@ -44,7 +44,7 @@
  * feeding stops, and the remote should reset itself ~8s later with the reason
  * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
  * assuming it does. */
-#define LED_DEBOUNCE 4   /* main-loop passes a charger state must hold */
+#define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
 
 #define MARK(off, v) (*(volatile uint32_t *)(0x2001FF00 + (off)) = (uint32_t)(v))
@@ -111,7 +111,7 @@ int main(void)
 	/* Boot sweep: light each channel in turn, then all three. Which physical
 	 * colour each channel drives is not in the decomp, so this is how they get
 	 * labelled — the name printed over USB is the channel that is lit. */
-	static const char *const fl_ch[3] = { "ch0", "ch1", "ch2" };
+	static const char *const fl_ch[3] = { "red", "green", "blue" };
 
 	for (int c = 0; c < 3; c++) {
 		funlight_set(c == 0, c == 1, c == 2, 100);
@@ -138,7 +138,8 @@ int main(void)
 	};
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
-	int last_led = -1, led_pending = -1, led_stable = 0;
+	int last_led = -1, led_pending = -1;
+	int64_t led_since = 0;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -247,15 +248,15 @@ int main(void)
 		 * that spends its life asleep is not worth the drain. */
 		int led = st.charger ? (st.charge_state == 2 ? 1 : 2) : (st.batt_low ? 0 : -1);
 
-		/* The charger GPIOs chatter, which showed up as the indicator flipping
-		 * colour at random. Only act on a state that has held for a few passes. */
+		/* A topped-off pack really does toggle between charging and complete,
+		 * and an IR burst draws enough current to nudge the charger IC on its
+		 * own — so this is real chatter, not a glitch to filter out. Require a
+		 * state to hold for LED_HOLD_MS before the colour follows it. */
 		if (led != led_pending) {
 			led_pending = led;
-			led_stable = 0;
-		} else if (led_stable < LED_DEBOUNCE) {
-			led_stable++;
+			led_since = k_uptime_get();
 		}
-		if (led_stable < LED_DEBOUNCE) {
+		if (k_uptime_get() - led_since < LED_HOLD_MS) {
 			led = last_led;
 		}
 

@@ -14,6 +14,12 @@ void funlight_init(void);
 
 /* Three channels, each on/off, at `pct` brightness (0..100).
  * Stock's own uses: on battery = blue, charging = red, charge complete = green. */
+/* Confirmed on hardware by the boot sweep: ch0 red, ch1 green, ch2 blue.
+ * All three together read as white. */
+#define FL_RED   0
+#define FL_GREEN 1
+#define FL_BLUE  2
+
 void funlight_set(bool ch0, bool ch1, bool ch2, int pct);
 
 /* Stock holds PA10 low for the duration of sleep (FUN_0801bf02). */

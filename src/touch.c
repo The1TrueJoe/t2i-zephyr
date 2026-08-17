@@ -143,26 +143,33 @@ void beep_init(void)
 				 | (2u << (7 * 4));
 
 	TIM4_PSC  = BEEP_PSC;
+	TIM4_CCR2 = 0;                          /* silent until beep_tone raises it */
 	beep_set_hz(BEEP_HZ);
 	TIM4_CCMR1 = (6u << 12) | (1u << 11);   /* OC2M = PWM1, OC2PE */
 	TIM4_CCER  = (1u << 4);                 /* CC2E */
 	TIM4_EGR   = TIM_EGR_UG;
 }
 
+static uint32_t beep_arr = 1249;
+
 void beep_set_hz(int hz)
 {
-	uint32_t arr = (hz > 0) ? (BEEP_TICK / (uint32_t)hz) - 1u : 1249u;
-
-	TIM4_ARR  = arr;
-	TIM4_CCR2 = arr / 2;                    /* 50% */
-	TIM4_EGR  = TIM_EGR_UG;
+	beep_arr = (hz > 0) ? (BEEP_TICK / (uint32_t)hz) - 1u : 1249u;
+	TIM4_ARR = beep_arr;
+	TIM4_EGR = TIM_EGR_UG;
 }
 
+/* Idle must leave PB7 LOW. With CC2E on and the timer stopped the counter sits
+ * at 0, so any non-zero CCR2 holds the output HIGH in PWM1 mode — DC across the
+ * transducer, which is a constant hum, not silence. CCR2 = 0 is never active. */
 static void beep_tone(int ms)
 {
-	TIM4_CR1 = TIM_CR1_CEN;
+	TIM4_CCR2 = beep_arr / 2;               /* 50% */
+	TIM4_EGR  = TIM_EGR_UG;
+	TIM4_CR1  = TIM_CR1_CEN;
 	k_msleep(ms);
-	TIM4_CR1 = 0;
+	TIM4_CR1  = 0;
+	TIM4_CCR2 = 0;
 }
 
 void beep_click(void) { beep_tone(BEEP_MS); }
