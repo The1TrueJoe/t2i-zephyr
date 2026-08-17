@@ -33,6 +33,7 @@
 #include "ir.h"
 
 uint16_t hx8347_panel_id(void);
+void hx8347_backlight_state(uint32_t *out);
 #include "wake.h"
 #include "lowpower.h"
 
@@ -46,6 +47,7 @@ uint16_t hx8347_panel_id(void);
  * feeding stops, and the remote should reset itself ~8s later with the reason
  * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
  * assuming it does. */
+#define IR_ENABLE_TEST 0   /* browns the remote out — see below */
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
 
@@ -125,10 +127,21 @@ int main(void)
 	k_msleep(500);
 
 	{
-		char idb[32];
+		char idb[40];
 
 		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
 		updater_emit(idb);
+	}
+	{
+		uint32_t bl[8];
+		char blb[128];
+
+		hx8347_backlight_state(bl);
+		snprintf(blb, sizeof(blb),
+			 "BL cr1=%08x arr=%u ccr2=%u ccer=%04x ccmr1=%04x "
+			 "moder_a=%08x afrl_a=%08x idr_c=%08x",
+			 bl[0], bl[1], bl[2], bl[3], bl[4], bl[5], bl[6], bl[7]);
+		updater_emit(blb);
 	}
 
 	ir_init();
@@ -188,10 +201,13 @@ int main(void)
 				st.debug = !st.debug;
 			}
 
-			/* IR check: no code database exists yet, so Record transmits a
-			 * plain NEC frame — the smallest thing that proves the carrier,
-			 * the envelope and the DMA timing against a real receiver. */
-			if (st.key == IR_TEST_KEY) {
+			/* IR check, DISABLED: sending a frame browns the remote out. A
+			 * NEC header is a 9ms mark, and if the envelope on PB15 is not
+			 * actually gating the PB0 carrier the way the decomp reads, that is
+			 * ~68ms of continuous 50%-duty LED drive — enough to drop the rail.
+			 * Do not re-enable until the gating is confirmed on a scope or the
+			 * drive current is measured. */
+			if (IR_ENABLE_TEST && st.key == IR_TEST_KEY) {
 				beep_click();
 				ir_send_nec(0x00, 0x15);
 				updater_emit("IR sent NEC 00 15");

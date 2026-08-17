@@ -79,6 +79,21 @@ static void panel_read_id(void)
 
 uint16_t hx8347_panel_id(void) { return panel_id; }
 
+/* Everything that decides whether PA1 is actually driving the dim input. Dump it
+ * after a cold boot and after a warm flash: if the two agree, nothing inside the
+ * MCU explains a dark screen and the fault is the driver IC itself. */
+void hx8347_backlight_state(uint32_t *out)
+{
+	out[0] = TIM2_CR1;
+	out[1] = TIM2_ARR;
+	out[2] = TIM2_CCR2;
+	out[3] = TIM2_CCER;
+	out[4] = TIM2_CCMR1;
+	out[5] = GPIO_MODER(GPIO_PORT_A);
+	out[6] = GPIO_AFRL(GPIO_PORT_A);
+	out[7] = GPIO_IDR(GPIO_PORT_C);
+}
+
 /* HX8347 windowed access: cols (X) = regs 0x02-0x05, rows (Y) = regs 0x06-0x09. */
 static void lcd_window(int x0, int y0, int x1, int y1)
 {
