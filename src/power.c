@@ -16,9 +16,15 @@
  * battery monitor, so taking it low browns out the display and lights the
  * low-battery indicator. Backlight off is done at the timer/pin instead. */
 #define BRIGHT_AWAKE  128
-/* 0 is now genuinely off and genuinely recoverable, matching how stock RTI
- * drives this backlight. */
-#define BRIGHT_ASLEEP 0
+/* "Off" is the smallest non-zero duty, not 0.
+ *
+ * Stock RTI drives its backlight fully off (TIM2 disabled, PA1 low) and we
+ * copied that exactly — but on this unit it does not come back: afterwards the
+ * registers read correct (PA1 in AF, 50% duty, PC12 high) and yet no light is
+ * produced. A duty that never goes static always recovers. 3 -> 1% duty, which
+ * is visually off in a lit room while still giving the driver IC edges to run
+ * its charge pump on. Costs ~1% of backlight power versus a true off. */
+#define BRIGHT_ASLEEP 3
 
 /* STM32 STOP mode instead of WFI while asleep: ~0.5mA against ~15-25mA, but a
  * stopped CPU has not proven attachable over SWD on this board even with
