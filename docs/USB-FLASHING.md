@@ -73,6 +73,20 @@ Re-run this after any change to boot order, USB init, or the watchdog: flip
 `FORCE_UNHEALTHY` to 1 in [src/main.c](../src/main.c), flash, confirm the port
 goes silent but stays present, then push a good image back.
 
+### Harder case: a real hard fault — verified 2026-08-17
+
+`FORCE_UNHEALTHY` is a *tidy* reset, which is the easy case. `BRICK_TEST 1`
+executes `udf #0` — a guaranteed UsageFault -> hard fault — placed after the
+safe-mode branch, exactly where a broken subsystem would sit. Result: three
+faulting boots, safe mode on the fourth, port live and silent, good image pushed
+over USB, remote came back as `T2i fw recovered-from-hardfault`. **A hard fault
+in application code is fully recoverable with no SWD.**
+
+Note for anyone repeating this: a store to an unmapped address is *not* a
+reliable fault on this part. The first attempt used `0xFFFFFFF0`, which sits in
+the vendor/PPB region — the write is simply ignored and the firmware ran on
+normally. Use `udf #0`.
+
 ### Before experimenting with the radio
 
 Radio code is exactly the class of thing safe mode exists for. Bump

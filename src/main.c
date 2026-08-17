@@ -57,6 +57,12 @@ void hx8347_backlight_state(uint32_t *out);
  * re-tested after changes to boot, USB or the watchdog — see docs/USB-FLASHING.md. */
 #define FORCE_UNHEALTHY 0
 
+/* Deliberately unbootable firmware, for testing the recovery path for real.
+ *   1 = hard fault AFTER updater_init()  — should recover via safe mode
+ *   2 = hang BEFORE updater_init()       — expected to be UNRECOVERABLE over USB
+ * See docs/USB-FLASHING.md. Leave at 0. */
+#define BRICK_TEST 0
+
 #define IR_ENABLE_TEST 0   /* browns the remote out — see below */
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
@@ -88,6 +94,13 @@ int main(void)
 {
 	bool unsafe_boot = safety_boot_check();
 
+	if (BRICK_TEST == 2) {
+		/* Before USB exists, so no boot can ever enumerate and safe mode can
+		 * never be reached. This is the documented gap, made real. */
+		while (1) {
+		}
+	}
+
 	/* USB first, always: it is the recovery path and must not depend on
 	 * anything below it surviving. */
 	updater_init();
@@ -99,6 +112,17 @@ int main(void)
 
 	if (unsafe_boot) {
 		safe_mode();   /* never returns */
+	}
+
+	if (BRICK_TEST == 1) {
+		/* An undefined instruction: a guaranteed UsageFault -> hard fault. A
+		 * write to an unmapped address is NOT reliable here — 0xFFFFFFF0 sits in
+		 * the vendor/PPB region and the store is simply ignored, which is how
+		 * the first attempt at this test silently did nothing.
+		 *
+		 * Placed after the safe-mode branch, exactly as a broken subsystem would
+		 * be: safe mode does not start it, so the remote stays reachable. */
+		__asm__ volatile("udf #0");
 	}
 
 	if (FORCE_UNHEALTHY) {
