@@ -20,6 +20,22 @@ set -eu
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 BIN=${1:-$HERE/build/zephyr/zephyr.bin}
+
+# Build first. Without this the script silently flashes whatever binary the last
+# SUCCESSFUL build left behind, so a compile error looks exactly like a working
+# flash — which has already cost two debugging rounds. Skip with SKIP_BUILD=1,
+# and never when an explicit binary was passed.
+if [ $# -eq 0 ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
+	: "${ZEPHYR_SDK_INSTALL_DIR:=$HOME/zephyr-sdks/zephyr-sdk-1.0.1}"
+	: "${ZEPHYR_TOOLCHAIN_VARIANT:=zephyr}"
+	export ZEPHYR_SDK_INSTALL_DIR ZEPHYR_TOOLCHAIN_VARIANT
+	. "$HOME/zephyrproject/zephyr/zephyr-env.sh"
+	"$HOME/zephyrproject/.venv/bin/west" build -b t2i "$HERE" \
+		-- -DBOARD_ROOT="$HERE" >/dev/null || {
+		echo "build failed — not flashing" >&2
+		exit 1
+	}
+fi
 ADDR=0x08004000
 TRIES=${TRIES:-6}
 

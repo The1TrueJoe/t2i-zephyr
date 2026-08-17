@@ -128,6 +128,8 @@ int touch_read(int *x, int *y, int *z)
 #define BEEP_HZ 2700        /* stock: 400. most small buzzers peak near 2.7 kHz */
 #define BEEP_MS 20          /* stock: 20 ms per key click */
 #define BEEP_TICK 500000
+
+static void beep_park(void);
 #define BEEP_PSC 119
 
 void beep_init(void)
@@ -148,8 +150,6 @@ void beep_init(void)
 }
 
 static uint32_t beep_arr = 1249;
-
-static void beep_park(void);
 
 void beep_set_hz(int hz)
 {
