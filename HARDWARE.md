@@ -14,7 +14,7 @@ RTI's exact config; a backlight boost at the wrong duty can over-volt the LEDs.*
 | PA13 / PA14 | 0 | SWDIO / SWCLK |
 | PB3 / PB4 / PB5 | 6 | SPI3 SCK / MISO / MOSI → **SPI flash** (S25FL256S) |
 | PB10 / PB11 | 4 | I2C2 SCL / SDA → **ST 3-axis accelerometer** (LIS3DH/LIS302DL family), configured for wake-on-motion (CTRL_REG1-3 @0x20-0x22, INT1 motion @0x30/0x32/0x33) — NOT touch |
-| PB15 | 5 | SPI2_MOSI (purpose TBD) |
+| PB15 | 5 | SPI2_MOSI — **IR envelope** (DMA1 Stream4 clocks mark/space bytes) |
 | PC10 / PC11 | 7 | USART3 TX / RX (radio-module comms / debug) |
 | PD4 / PD5 / PD7 / PD13 | 12 | FSMC: NOE(RD) / NWE(WR) / NE1(CS) / A18(RS/DC) — **LCD** |
 | PD14 / PD15 / PD0 / PD1 | 12 | FSMC D0 / D1 / D2 / D3 — LCD data |
@@ -28,7 +28,9 @@ RTI's exact config; a backlight boost at the wrong duty can over-volt the LEDs.*
 | PB1 | ADC — sensor |
 
 (PA4 was previously guessed as DAC/speaker — it is actually a **touchscreen**
-electrode, see below. The speaker pin is currently unidentified.)
+electrode, see below. The beeper is **PB7 = TIM4_CH2**, a plain 400/500 Hz
+square wave gated on for 20 ms per key click. There is no DAC and no sample
+playback anywhere in stock.)
 
 ## Touchscreen — 4-wire resistive (reversed)
 
@@ -147,8 +149,8 @@ reversed from RTI (some inferred):
 | Pin | Role |
 |---|---|
 | PB6 | SPI-flash driver control line (used with the flash CS PA15) |
-| PB14 | Write-only **SPI2 chip-select** — the CC1150 433 MHz RF module (**desoldered** on the bench unit → inert) |
-| PB0 | Tied to a PWM/frequency routine alongside PB14 — RF modulation / tone (radio desoldered → inert) |
+| PB14 | **RF path enable**, active high — the CC1150 433 MHz RF module (**desoldered** on the bench unit). Must be held **LOW** to select the IR path. |
+| PB0 | **IR carrier** — TIM3_CH3 (AF2), 50% duty at the code's carrier frequency, idles LOW = off. Earlier notes calling this "RF modulation / tone" were wrong; see [docs/IR-BUZZER.md](docs/IR-BUZZER.md). |
 | PC13 | Peripheral **chip-select** (pulsed around a bus transfer) |
 | PC12 | **Shared power-rail enable — drive HIGH and leave it there.** Must be high or *both* backlights stay dark even though TIM2/TIM8 run correctly and the panel answers on the FSMC bus. Stock drives it in `FUN_08021354` (output PP + pull-up). It latches across warm resets, so a board that lost this pin only goes dark after a true power removal — which makes it look like a firmware regression. **Do not drop it to save power:** it feeds more than the backlight. Taking it low lights the front-panel **low-battery indicator** and removes the panel's logic supply, so the HX8347 loses its initialisation and the image cannot be restored by re-enabling the backlight alone (it would need a full panel re-init). Set once in `lcd_hw_init()`. |
 | PA10 | Control/enable line (exact function not individually pinned; safe) |
@@ -156,4 +158,8 @@ reversed from RTI (some inferred):
 (PA6 was previously listed here — it is actually a **touchscreen electrode**, see above.)
 
 The ZigBee (EM250) / RF (CC1150) radio was **desoldered** on the bench unit, so its
-control pins (PB14/PB0, and USART3 if used for the radio) are inert here.
+control pins (PB14 and USART3 if used for the radio) are inert here — but PB0 is
+**not** inert: it is the IR carrier and works regardless of the radio.
+
+TIM1 and TIM5 are never touched by stock, so the old "PA0 = TIM5_CH1" note leads
+nowhere.

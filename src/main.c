@@ -30,6 +30,7 @@
 #include "keypad.h"
 #include "battery.h"
 #include "funlight.h"
+#include "ir.h"
 #include "wake.h"
 #include "lowpower.h"
 
@@ -105,6 +106,7 @@ int main(void)
 	ui_touch_indev_init();
 	battery_init();
 	funlight_init();
+	ir_init();
 	bool accel_ok = accel_init();
 	bool wake_ok = wake_init();
 	power_init(disp, recovery);
@@ -154,6 +156,15 @@ int main(void)
 			}
 			updater_emit(ev);
 			last_reported_key = st.key;
+
+			/* IR check: no code database exists yet, so Record transmits a
+			 * plain NEC frame — the smallest thing that proves the carrier,
+			 * the envelope and the DMA timing against a real receiver. */
+			if (st.key == IR_TEST_KEY) {
+				beep_click();
+				ir_send_nec(0x00, 0x15);
+				updater_emit("IR sent NEC 00 15");
+			}
 		}
 
 		/* debug key: hold to arm the watchdog self-test */

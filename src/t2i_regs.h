@@ -60,6 +60,15 @@
 
 /* ---- TIM8 (keypad backlight, CH3 -> PC8 AF3). Advanced timer (needs MOE).
  *       Timer clock = 120 MHz (APB2 /2, x2). ---- */
+#define TIM4_BASE      0x40000800u
+#define TIM4_CR1       REG32(TIM4_BASE + 0x00)
+#define TIM4_EGR       REG32(TIM4_BASE + 0x14)
+#define TIM4_CCMR1     REG32(TIM4_BASE + 0x18)
+#define TIM4_CCER      REG32(TIM4_BASE + 0x20)
+#define TIM4_PSC       REG32(TIM4_BASE + 0x28)
+#define TIM4_ARR       REG32(TIM4_BASE + 0x2C)
+#define TIM4_CCR2      REG32(TIM4_BASE + 0x38)
+
 #define TIM8_BASE      0x40010400u
 #define TIM8_CR1       REG32(TIM8_BASE + 0x00)
 #define TIM8_EGR       REG32(TIM8_BASE + 0x14)
@@ -95,13 +104,31 @@
 #define ADC_CR2_ADON   (1u << 0)
 #define ADC_CR2_SWSTART (1u << 30)
 
-/* ---- TIM3 (speaker/beeper, CH3 -> PB0 AF2). Timer clock = 60 MHz. ---- */
+/* ---- TIM3 (IR CARRIER (not the beeper - see docs/IR-BUZZER.md), CH3 -> PB0 AF2). Timer clock = 60 MHz. ---- */
 #define TIM3_BASE      0x40000400u
 #define TIM3_CR1       REG32(TIM3_BASE + 0x00)
 #define TIM3_CCMR2     REG32(TIM3_BASE + 0x1C)
 #define TIM3_CCER      REG32(TIM3_BASE + 0x20)
 #define TIM3_PSC       REG32(TIM3_BASE + 0x28)
 #define TIM3_ARR       REG32(TIM3_BASE + 0x2C)
+#define TIM3_EGR       REG32(TIM3_BASE + 0x14)
 #define TIM3_CCR3      REG32(TIM3_BASE + 0x3C)
+
+/* ---- SPI2 (IR envelope on PB15/MOSI) + DMA1 Stream4 ch0 = SPI2_TX ---- */
+#define SPI2_BASE      0x40003800u
+#define SPI2_CR1       REG32(SPI2_BASE + 0x00)
+#define SPI2_CR2       REG32(SPI2_BASE + 0x04)
+#define SPI2_SR        REG32(SPI2_BASE + 0x08)
+#define SPI2_DR        REG32(SPI2_BASE + 0x0C)
+
+#define DMA1_BASE      0x40026000u
+#define DMA1_HISR      REG32(DMA1_BASE + 0x04)
+#define DMA1_HIFCR     REG32(DMA1_BASE + 0x0C)
+#define DMA1_S4CR      REG32(DMA1_BASE + 0x70)
+#define DMA1_S4NDTR    REG32(DMA1_BASE + 0x74)
+#define DMA1_S4PAR     REG32(DMA1_BASE + 0x78)
+#define DMA1_S4M0AR    REG32(DMA1_BASE + 0x7C)
+#define DMA1_S4FCR     REG32(DMA1_BASE + 0x84)
+#define DMA_HISR_TCIF4 (1u << 5)
 
 #endif /* T2I_REGS_H */

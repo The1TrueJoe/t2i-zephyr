@@ -114,32 +114,45 @@ int touch_read(int *x, int *y, int *z)
 	return 1;
 }
 
-/* ---- beeper: TIM3_CH3 on PB0 (AF2), ~3 kHz tone burst ---- */
+/* ---- beeper: TIM4_CH2 on PB7 (AF2), ~400 Hz square burst ----
+ *
+ * This was previously on TIM3_CH3/PB0, which is WRONG — PB0 is the IR carrier
+ * (docs/IR-BUZZER.md). Stock's beeper is a plain 50% square wave on PB7 gated on
+ * for 20ms per key click by its "Buzzer Task": TIM4 tick = 60MHz/120 = 500kHz,
+ * ARR 1249 -> 400 Hz. There is no DAC and no sample playback anywhere in stock.
+ */
+#define BEEP_PSC 119        /* 60 MHz / 120 = 500 kHz */
+#define BEEP_ARR 1249       /* 500 kHz / 1250 = 400 Hz */
+
 void beep_init(void)
 {
 	RCC_AHB1ENR |= RCC_AHB1ENR_GPIO(GPIO_PORT_B);
-	RCC_APB1ENR |= (1u << 1);       /* TIM3EN */
-	/* PB0 -> AF2 = TIM3_CH3 */
-	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << 0)) | (GPIO_MODE_AF << 0);
-	GPIO_OSPEEDR(GPIO_PORT_B) |= (3u << 0);
-	GPIO_AFRL(GPIO_PORT_B) = (GPIO_AFRL(GPIO_PORT_B) & ~(0xFu << 0)) | (2u << 0);
-	TIM3_PSC  = 0;
-	TIM3_ARR  = 20000;              /* 60 MHz / 20000 = 3 kHz */
-	TIM3_CCR3 = 10000;              /* 50% */
-	TIM3_CCMR2 = (6u << 4) | (1u << 3);  /* OC3M = PWM1, OC3PE */
-	TIM3_CCER  = (1u << 8);         /* CC3E */
+	RCC_APB1ENR |= (1u << 2);       /* TIM4EN */
+
+	/* PB7 -> AF2 = TIM4_CH2 */
+	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << (7 * 2)))
+				  | (GPIO_MODE_AF << (7 * 2));
+	GPIO_OSPEEDR(GPIO_PORT_B) |= (3u << (7 * 2));
+	GPIO_AFRL(GPIO_PORT_B) = (GPIO_AFRL(GPIO_PORT_B) & ~(0xFu << (7 * 4)))
+				 | (2u << (7 * 4));
+
+	TIM4_PSC  = BEEP_PSC;
+	TIM4_ARR  = BEEP_ARR;
+	TIM4_CCR2 = BEEP_ARR / 2;               /* 50% */
+	TIM4_CCMR1 = (6u << 12) | (1u << 11);   /* OC2M = PWM1, OC2PE */
+	TIM4_CCER  = (1u << 4);                 /* CC2E */
+	TIM4_EGR   = TIM_EGR_UG;
 }
 
 static void beep_tone(int ms)
 {
-	TIM3_CR1 = TIM_CR1_CEN;         /* tone on */
+	TIM4_CR1 = TIM_CR1_CEN;
 	k_msleep(ms);
-	TIM3_CR1 = 0;                   /* tone off */
+	TIM4_CR1 = 0;
 }
 
-void beep_click(void) { beep_tone(30); }
+void beep_click(void) { beep_tone(20); }   /* stock: 20ms per key click */
 
-/* boot self-test: two clearly-audible beeps if the speaker path works at all */
 void beep_test(void)
 {
 	beep_tone(180);
