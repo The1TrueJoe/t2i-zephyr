@@ -54,6 +54,25 @@ clear the latched backlight (see [BACKLIGHT.md](BACKLIGHT.md) §4b). Every step 
 it is bounded and it feeds the watchdog across the delay, but anything added
 there runs before the safety net exists.
 
+## Recovery from safe mode — verified 2026-08-17
+
+The last link in the chain, exercised on hardware rather than assumed:
+
+1. Built with `FORCE_UNHEALTHY 1`, which resets ~1.5 s into `main`, before
+   `safety_mark_healthy()` is ever reached. Flashed over SWD.
+2. The remote reset-looped 3 times and engaged safe mode on the 4th boot.
+   Observed: the CDC port stayed enumerated and went **silent** — no boot banner,
+   because nothing past `updater_init()` runs there.
+3. Pushed a good image over **USB alone**, no SWD.
+4. The remote came back reporting `T2i fw recovered-via-safe-mode`.
+
+So a firmware that cannot survive its own boot is still recoverable over USB with
+no SWD, which is the whole basis for working on a radio remote.
+
+Re-run this after any change to boot order, USB init, or the watchdog: flip
+`FORCE_UNHEALTHY` to 1 in [src/main.c](../src/main.c), flash, confirm the port
+goes silent but stays present, then push a good image back.
+
 ### Before experimenting with the radio
 
 Radio code is exactly the class of thing safe mode exists for. Bump

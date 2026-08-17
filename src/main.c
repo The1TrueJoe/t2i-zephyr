@@ -52,6 +52,11 @@ void hx8347_backlight_state(uint32_t *out);
  * important question the update path has to answer. */
 #define FW_VERSION "dev"
 
+/* Set to 1 to reset before ever reaching safety_mark_healthy(), so the boot
+ * counter climbs and safe mode engages. This is how the recovery path gets
+ * re-tested after changes to boot, USB or the watchdog — see docs/USB-FLASHING.md. */
+#define FORCE_UNHEALTHY 0
+
 #define IR_ENABLE_TEST 0   /* browns the remote out — see below */
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
@@ -94,6 +99,11 @@ int main(void)
 
 	if (unsafe_boot) {
 		safe_mode();   /* never returns */
+	}
+
+	if (FORCE_UNHEALTHY) {
+		k_msleep(1500);
+		safety_force_reset();
 	}
 
 	const struct device *disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
