@@ -138,8 +138,13 @@ static void keypad_backlight_on(void)
 {
 	RCC_APB2ENR |= (1u << 1);                /* TIM8EN */
 	pin_af(GPIO_PORT_C, 8, 3);               /* PC8 -> AF3 = TIM8_CH3 */
-	TIM8_PSC = 9; TIM8_ARR = 300; TIM8_CCR3 = 271;   /* ~40 kHz, ~90% (active-low) */
-	TIM8_CCMR2 = (6u << 4) | (1u << 3);      /* OC3M = PWM1 + OC3PE */
+	/* PWM mode 2 + CC3P, matching the LCD channel, so duty maps directly to
+	 * brightness. This was PWM mode *1* with the same active-low polarity,
+	 * which inverts it: CCR3=271/300 then meant the pin was LOW 90% of the
+	 * time, i.e. ~10% brightness, which reads as "keypad backlight is off". */
+	TIM8_PSC = 9; TIM8_ARR = 300;
+	TIM8_CCR3 = 270;                         /* 90% */
+	TIM8_CCMR2 = (7u << 4) | (1u << 3);      /* OC3M = PWM2 + OC3PE */
 	TIM8_CCER  = (1u << 8) | (1u << 9);      /* CC3E + CC3P */
 	TIM8_BDTR  = TIM_BDTR_MOE;               /* advanced timer needs MOE */
 	TIM8_CR1   = TIM_CR1_CEN;

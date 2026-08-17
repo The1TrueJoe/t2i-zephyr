@@ -69,6 +69,11 @@ low with a pull-up on Y+ and sense Y+ (cross-plate, so a press shorts it low).
 
 ## LCD sleep / wake (verified in decomp)
 
+> **See [docs/BACKLIGHT.md](docs/BACKLIGHT.md)** for the full sleep/backlight
+> investigation, including four approaches already ruled out on hardware and the
+> one open question (why stock's backlight recovers and ours does not).
+
+
 Stock gets a genuinely black screen in sleep by powering the **panel** down, not
 by killing the backlight. From the LCD control switch `FUN_0800fb2c`, cases 6
 (off) and 5 (on), both gated on the panel ID reading `0x47`:
