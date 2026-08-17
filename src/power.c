@@ -6,6 +6,7 @@
 #include "power.h"
 #include "wake.h"
 #include "lowpower.h"
+#include "funlight.h"
 
 /* Power-path markers, readable over SWD while the screen is dark:
  *   0x2001FF8C  asleep flag
@@ -84,6 +85,7 @@ bool power_tick(bool activity, const char *source)
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
 		display_blanking_on(display);    /* panel off = truly black, like stock */
+		funlight_sleep();                /* stock holds PA10 low while asleep */
 		PMARK(0x04, 0);
 		asleep = true;
 		PMARK(0x00, 1);

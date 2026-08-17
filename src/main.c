@@ -29,6 +29,7 @@
 #include "accel.h"
 #include "keypad.h"
 #include "battery.h"
+#include "funlight.h"
 #include "wake.h"
 #include "lowpower.h"
 
@@ -103,6 +104,7 @@ int main(void)
 
 	ui_touch_indev_init();
 	battery_init();
+	funlight_init();
 	bool accel_ok = accel_init();
 	bool wake_ok = wake_init();
 	power_init(disp, recovery);
@@ -118,6 +120,7 @@ int main(void)
 	};
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
+	int last_led = -1;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -191,6 +194,8 @@ int main(void)
 			/* Just woke: the panel was powered down, so its framebuffer is
 			 * gone and LVGL would otherwise repaint nothing. */
 			ui_invalidate();
+			funlight_init();     /* stock re-sends the resync command on wake */
+			last_led = -1;       /* force the indicator to be re-applied */
 		}
 
 		accel_read(&st.accel_x, &st.accel_y, &st.accel_z);
@@ -198,6 +203,18 @@ int main(void)
 		st.batt_low = battery_low();
 		st.charger = battery_charger_present();
 		st.charge_state = battery_charge_state();
+
+		/* Front-panel indicator, following stock's states (FUN_0800e214):
+		 * on battery = one colour, charging = another, complete = a third.
+		 * Which physical colour each channel drives is NOT yet confirmed —
+		 * no part number appears near this code — so these are channel
+		 * indices, to be labelled once observed on hardware.
+		 * Only written on change: a frame locks interrupts for ~3ms. */
+		int led = st.charger ? (st.charge_state == 2 ? 1 : 2) : 0;
+		if (led != last_led) {
+			funlight_set(led == 1, led == 2, led == 0, 40);
+			last_led = led;
+		}
 		ui_touch_raw(&st.touch_x, &st.touch_y, &st.touch_z);
 		ui_touch_range(&st.touch_min_x, &st.touch_max_x,
 			       &st.touch_min_y, &st.touch_max_y);
