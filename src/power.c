@@ -6,7 +6,6 @@
 #include "power.h"
 #include "wake.h"
 #include "lowpower.h"
-#include "backlight.h"
 
 /* Power-path markers, readable over SWD while the screen is dark:
  *   0x2001FF8C  asleep flag
@@ -24,9 +23,6 @@
  * battery monitor, so taking it low browns out the display and lights the
  * low-battery indicator. Backlight off is done at the timer/pin instead. */
 #define BRIGHT_AWAKE  128
-
-/* Keypad backlight while awake, 0..100 (stock's curve floors around 25). */
-#define KEYPAD_AWAKE 90
 /* "Off" is the smallest non-zero duty, not 0.
  *
  * Stock RTI drives its backlight fully off (TIM2 disabled, PA1 low) and we
@@ -78,7 +74,6 @@ bool power_tick(bool activity, const char *source)
 			woke_by = source ? source : "?";
 			wake_count_total++;
 			display_blanking_off(display);   /* panel back on */
-			keypad_backlight_set(KEYPAD_AWAKE);
 			display_set_brightness(display, BRIGHT_AWAKE);
 			PMARK(0x04, BRIGHT_AWAKE);
 			asleep = false;
@@ -89,7 +84,6 @@ bool power_tick(bool activity, const char *source)
 	} else if (!never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
 		display_blanking_on(display);    /* panel off = truly black, like stock */
-		keypad_backlight_set(0);         /* the keys should not glow while asleep */
 		PMARK(0x04, 0);
 		asleep = true;
 		PMARK(0x00, 1);
