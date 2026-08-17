@@ -31,6 +31,7 @@
 #include "battery.h"
 #include "funlight.h"
 #include "ir.h"
+#include "zbx.h"
 
 uint16_t hx8347_panel_id(void);
 void hx8347_backlight_state(uint32_t *out);
@@ -170,6 +171,11 @@ int main(void)
 		char idb[40];
 
 		updater_emit("T2i fw " FW_VERSION);
+		/* Radio init goes here — in main, after updater_init(). NEVER in a
+		 * driver-init hook: anything failing before USB is up cannot be
+		 * recovered on a remote without SWD (docs/USB-FLASHING.md). */
+		zbx_uart_init();
+		updater_emit(zbx_selftest() ? "ZBX selftest PASS" : "ZBX selftest FAIL");
 		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
 		updater_emit(idb);
 	}
