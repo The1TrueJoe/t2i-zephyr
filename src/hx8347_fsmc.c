@@ -17,6 +17,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "t2i_regs.h"
+#include "backlight.h"
+
+/* Keypad backlight level while the remote is awake. */
+#define KEYPAD_DEFAULT 90
 
 #define PANEL_W 240
 #define PANEL_H 320
@@ -134,11 +138,23 @@ static void backlight_set(int pct)
 	TIM2_CR1   = TIM_CR1_CEN;
 }
 
-static void keypad_backlight_on(void)
+/* Keypad backlight, following stock RTI (FUN_0801ab1e): TIM8 period 300 with
+ * pulse = pct*2 + 75, endpoints as static GPIO with the timer stopped. */
+void keypad_backlight_set(int pct)
 {
+	if (pct < 0) pct = 0; if (pct > 100) pct = 100;
 	RCC_APB2ENR |= (1u << 1);                /* TIM8EN */
+
+	if (pct == 0 || pct == 100) {
+		TIM8_CR1 = 0;
+		/* stock: ResetBits (low) for off, SetBits (high) for full */
+		pin_out(GPIO_PORT_C, 8, pct ? 1 : 0);
+		return;
+	}
+
 	pin_af(GPIO_PORT_C, 8, 3);               /* PC8 -> AF3 = TIM8_CH3 */
-	TIM8_PSC = 9; TIM8_ARR = 300; TIM8_CCR3 = 271;   /* ~40 kHz, ~90% (active-low) */
+	TIM8_PSC = 9; TIM8_ARR = 300;
+	TIM8_CCR3 = (uint32_t)pct * 2 + 75;      /* stock curve */
 	TIM8_CCMR2 = (6u << 4) | (1u << 3);      /* OC3M = PWM1 + OC3PE */
 	TIM8_CCER  = (1u << 8) | (1u << 9);      /* CC3E + CC3P */
 	TIM8_BDTR  = TIM_BDTR_MOE;               /* advanced timer needs MOE */
@@ -162,7 +178,7 @@ static void lcd_hw_init(void)
 	 * the PWMs run and the panel logic answers on the FSMC bus. */
 	pin_out(GPIO_PORT_C, 12, 1);
 
-	keypad_backlight_on();
+	keypad_backlight_set(KEYPAD_DEFAULT);
 
 	int dpins[] = {0,1,4,5,7,13,14,15};
 	for (unsigned i = 0; i < sizeof(dpins)/sizeof(dpins[0]); i++) pin_af(GPIO_PORT_D, dpins[i], 12);

@@ -22,6 +22,8 @@
 #define RCC_CFGR      REG32(RCC_BASE + 0x08)
 
 #define PWR_CR_LPDS   (1u << 0)   /* regulator in low-power mode during stop */
+#define PWR_CR_CWUF   (1u << 2)   /* clear wakeup flag */
+#define EXTI_PR       REG32(0x40013C14)   /* EXTI pending register */
 #define PWR_CR_PDDS   (1u << 1)   /* 0 = STOP, 1 = STANDBY */
 #define SCR_SLEEPDEEP (1u << 2)
 
@@ -57,11 +59,31 @@ void lowpower_stop(void)
 	stops++;
 	RCC_APB1ENR |= RCC_APB1ENR_PWREN;   /* PWR_CR is unwritable without this */
 
+	/* Clear the wakeup flag, or the next entry falls straight back out. Stock
+	 * RTI does the same in its standby routine (PWR_CR |= CWUF). */
+	PWR_CR |= PWR_CR_CWUF;
+
+	/* Clear pending EXTI lines for the same reason: a stale edge from the
+	 * keypad rows or the accelerometer would wake us immediately. The main loop
+	 * re-scans every input after we return, so nothing real is lost by
+	 * discarding the pending bits here. */
+	EXTI_PR = 0xFFFFFFFFu;
+
 	PWR_CR = (PWR_CR & ~PWR_CR_PDDS) | PWR_CR_LPDS;
 	SCB_SCR |= SCR_SLEEPDEEP;
 
+	/* Interrupts off across the entry: on wake we come back on the 16 MHz HSI,
+	 * and an ISR running before the PLL is restored would execute with entirely
+	 * wrong clock assumptions (timing, baud rates, ADC sampling). */
+	__asm__ volatile ("cpsid i" ::: "memory");
+
+	/* SEV/WFE/WFE rather than a bare WFI: the first WFE consumes any event that
+	 * is already pending, so the second one actually sleeps. With a plain WFI
+	 * and something pending we would fall straight through and never stop. */
 	__asm__ volatile ("dsb" ::: "memory");
-	__asm__ volatile ("wfi");
+	__asm__ volatile ("sev");
+	__asm__ volatile ("wfe");
+	__asm__ volatile ("wfe");
 	__asm__ volatile ("isb" ::: "memory");
 
 	SCB_SCR &= ~SCR_SLEEPDEEP;
@@ -72,6 +94,7 @@ void lowpower_stop(void)
 		__asm__ volatile("nop");
 	}
 	if (!(RCC_CR & RCC_CR_HSERDY)) {
+		__asm__ volatile ("cpsie i" ::: "memory");
 		return;   /* no crystal — stay on HSI rather than hang */
 	}
 
@@ -80,6 +103,7 @@ void lowpower_stop(void)
 		__asm__ volatile("nop");
 	}
 	if (!(RCC_CR & RCC_CR_PLLRDY)) {
+		__asm__ volatile ("cpsie i" ::: "memory");
 		return;
 	}
 
@@ -88,4 +112,6 @@ void lowpower_stop(void)
 	     ((RCC_CFGR >> CFGR_SWS_SHIFT) & CFGR_SW_MASK) != CFGR_SW_PLL; i++) {
 		__asm__ volatile("nop");
 	}
+
+	__asm__ volatile ("cpsie i" ::: "memory");   /* clocks are back: ISRs may run */
 }
