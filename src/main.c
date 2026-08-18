@@ -66,6 +66,32 @@ void hx8347_backlight_state(uint32_t *out);
 
 #define IR_ENABLE_TEST 0   /* browns the remote out — see below */
 #define KEY_HOLD_MS 400  /* a press this long is a hold, not a click */
+/* Ambient light -> backlight. Thresholds are MEASURED on this hardware, not scaled:
+ *   thumb fully over the sensor   1..6
+ *   ordinary lit room             5..20
+ *   torch pointed at it           400
+ * So the entire indoor span is a couple of dozen counts out of 4095, and anything that treated
+ * the reading as a 0..4095 range would sit on the bottom step forever. `above` is the raw count
+ * a step needs to beat, walked from brightest down. */
+static const struct { int above; int pct; } ALS_STEPS[] = {
+	{ 100, 90 },   /* daylight or a torch on it */
+	{  20, 70 },
+	{  10, 50 },
+	{   3, 30 },
+	{  -1, 15 },   /* covered, or a dark room */
+};
+
+/* How long a light level must hold before the backlight follows it.
+ *
+ * Long on purpose, and longer than the LED's: a hand passing over the remote, or somebody
+ * walking between it and a lamp, must not step the screen. Slow is also what stops a feedback
+ * loop if the panel's own backlight reaches the sensor -- a fast loop there would ramp itself
+ * to full. */
+#define ALS_HOLD_MS 4000
+
+/* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
+#define AUTO_BRIGHTNESS 1
+
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
 
@@ -212,6 +238,8 @@ int main(void)
 	int64_t key_down_at = 0;
 	bool key_held_sent = false;
 	int64_t led_since = 0;
+	int als_step = -1, als_pending = -1;
+	int64_t als_since = 0;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -327,8 +355,27 @@ int main(void)
 		accel_read(&st.accel_x, &st.accel_y, &st.accel_z);
 		st.batt_raw = battery_raw();
 		st.batt_low = battery_low();
+		st.als = als_raw();
 		st.charger = battery_charger_present();
 		st.charge_state = battery_charge_state();
+
+		/* Auto-brightness. Only written on an actual change: every write reprograms TIM2. */
+		if (AUTO_BRIGHTNESS && st.als >= 0) {
+			int step = 0;
+
+			while (ALS_STEPS[step].above >= 0 && st.als <= ALS_STEPS[step].above) {
+				step++;
+			}
+			if (step != als_pending) {
+				als_pending = step;
+				als_since = k_uptime_get();
+			} else if (step != als_step &&
+				   k_uptime_get() - als_since >= ALS_HOLD_MS) {
+				als_step = step;
+				display_set_brightness(disp,
+						       (uint8_t)(ALS_STEPS[step].pct * 255 / 100));
+			}
+		}
 
 		/* Front-panel indicator, following stock's states (FUN_0800e214):
 		 * on battery = one colour, charging = another, complete = a third.

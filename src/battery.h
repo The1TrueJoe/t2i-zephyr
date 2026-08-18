@@ -17,6 +17,10 @@ void battery_init(void);
 /* Raw 12-bit ADC counts, or -1 if the conversion did not complete. */
 int battery_raw(void);
 
+/* Ambient light, raw 12-bit counts. Lives here because it shares ADC1 with the battery — see
+ * the note in battery.c on why it is not on stock's ADC2. */
+int als_raw(void);
+
 /* Stock's hysteresis: low below 2460, clears above 2731. */
 bool battery_low(void);
 

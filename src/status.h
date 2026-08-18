@@ -28,6 +28,7 @@ struct t2i_status {
 	/* battery / charger */
 	int      batt_raw;                       /* 12-bit counts, -1 = no reading */
 	bool     batt_low;
+	int      als;                            /* ambient light, raw 12-bit; -1 = no reading */
 	bool     charger;
 	uint8_t  charge_state;
 

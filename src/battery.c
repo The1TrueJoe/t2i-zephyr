@@ -29,6 +29,14 @@
 
 #define BATT_CHANNEL 7                  /* PA7 = ADC1 IN7 */
 
+/* Ambient light shares ADC1 rather than getting its own controller.
+ *
+ * Stock puts the "ALS Task" on ADC2 channel 9 (FUN_0801c030) and then needs a mutex, because
+ * ADC2 is also the touchscreen's (channels 3..6). PB1 is IN9 on *both* ADCs, so putting it here
+ * sidesteps that contention entirely — and one owner of ADC1 means nothing else can be
+ * mid-conversion on a different channel when we re-select SQR3. */
+#define ALS_CHANNEL 9                   /* PB1 = ADC1 IN9 */
+
 /* Stock's thresholds, raw 12-bit counts (FUN_0801bd58 region). */
 #define BATT_LOW_TRIP  2460
 #define BATT_LOW_CLEAR 2731
@@ -37,11 +45,13 @@ static bool low_latched;
 
 void battery_init(void)
 {
-	RCC_AHB1ENR |= RCC_AHB1ENR_GPIO(GPIO_PORT_A) | RCC_AHB1ENR_GPIO(GPIO_PORT_C);
+	RCC_AHB1ENR |= RCC_AHB1ENR_GPIO(GPIO_PORT_A) | RCC_AHB1ENR_GPIO(GPIO_PORT_B)
+		       | RCC_AHB1ENR_GPIO(GPIO_PORT_C);
 	RCC_APB2ENR |= (1u << 8);       /* ADC1EN */
 
-	/* PA7 analog */
+	/* PA7 analog (battery), PB1 analog (ambient light) */
 	GPIO_MODER(GPIO_PORT_A) |= (3u << (7 * 2));
+	GPIO_MODER(GPIO_PORT_B) |= (3u << (1 * 2));
 
 	/* Charger sense: PC9 present, PC14/PC15 status — inputs with pull-ups. */
 	for (int pin = 9; pin <= 15; pin++) {
@@ -61,9 +71,9 @@ void battery_init(void)
 	k_busy_wait(20);
 }
 
-int battery_raw(void)
+static int adc1_read(int ch)
 {
-	ADC1_SQR3 = BATT_CHANNEL;
+	ADC1_SQR3 = (uint32_t)ch;
 	ADC1_SR = 0;
 	ADC1_CR2 |= ADC_CR2_SWSTART_BIT;
 
@@ -76,6 +86,15 @@ int battery_raw(void)
 	}
 	return (int)(ADC1_DR & 0xFFF);
 }
+
+int battery_raw(void) { return adc1_read(BATT_CHANNEL); }
+
+/* Raw ambient light, 0..4095, or -1 if the conversion stalled.
+ *
+ * Higher means MORE light (docs/BATTERY-LEDS.md, inferred from which brightness preset each
+ * state selects — not measured, so the direction is worth confirming with a torch before any
+ * auto-brightness curve is built on it). */
+int als_raw(void) { return adc1_read(ALS_CHANNEL); }
 
 bool battery_low(void)
 {
