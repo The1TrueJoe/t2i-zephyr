@@ -172,7 +172,31 @@ Also established: **stock sends no reply to `0x82`.** `--start-only` returned 0 
 and refused are indistinguishable from the host, and `FUN_0801F6D8`'s return value never reaches
 USB. The original uploader discarding that read was not the bug.
 
-**Next step: capture what ID actually sends.** USBPcap + Wireshark on the Windows VM while ID
+#### ETW capture of a real ID update — 2026-08-18
+
+`logman` + `tracerpt` with `Microsoft-Windows-USB-USBXHCI` (driver-free, works on ARM64 where
+USBPcap has no build). No payload bytes, but transfer shape:
+
+| | ID | our uploader |
+|---|---|---|
+| bulk frames | **8063 x 64 bytes** | 8063 x 64 bytes (`0x82` + 8062 data) |
+| device info | control transfers on EP1 (255x3, 18x2) | one extra `0x80`-family bulk frame (`0x83`) |
+
+**The structure is identical.** That rules out an extra finalize command, a different chunk size, a
+trailing frame, or a second pass — every "ID sends something more" theory. The difference is in the
+**contents** of the frames, which ETW does not record.
+
+Also settled here: `FUN_08017284`, the caller of the start handler, **resets the remote** when the
+start is refused (`AIRCR = VECTKEY | SYSRESETREQ`, then spin). Our `--start-only` probe did not
+reboot the unit, so **the start was accepted**: the SPI check passed, `declared` was set to 507905,
+and the first sector was erased. "Start refused" is dead as an explanation.
+
+Remaining suspect: the exact frame layout — specifically how `FUN_0801F714(data, len)` derives
+`len`. If stock reads a length from inside the frame rather than from the USB transfer size,
+`received` never reaches `declared`, the last-block branch never runs, and stock waits forever with
+no reply. That matches every observation.
+
+**Older note, superseded:** USBPcap + Wireshark on the Windows VM while ID
 performs an update gives the exact frame sequence, and diffing that against `upload()` in
 `t2i_usb_uploader.py` ends the guesswork. Static analysis has gone as far as it usefully can here —
 `FUN_0801F6D8` has no resolvable callers and no function-pointer table entry, so the USB command
