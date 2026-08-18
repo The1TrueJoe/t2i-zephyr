@@ -169,11 +169,23 @@ const char *keypad_name(uint8_t code)
 	return key_names[code - 128];
 }
 
-uint8_t keypad_scan(int *row, int *col)
+/* How long a reading must hold before it is believed.
+ *
+ * Measured, not guessed: holding one key down produced a continuous stream of alternating
+ * DOWN/UP transitions for as long as it was held — dozens of them over several seconds. That is
+ * NOT contact bounce, which settles in a few milliseconds; something in the scan misreads the
+ * row on some passes, and the underlying cause is still worth a scope. The effect either way is
+ * that every consumer saw dozens of presses for one, and the hold timer was reset before it
+ * could ever expire.
+ *
+ * The main loop runs every 10ms, so this is three consecutive agreeing samples. */
+#define KEY_DEBOUNCE_MS 30
+
+static uint8_t scan_once(int *row, int *col)
 {
 	for (int c = 0; c < 8; c++) {
 		cols_drive(c);
-		k_busy_wait(20);
+		k_busy_wait(50);   /* was 20us; cheap insurance against an under-settled row */
 
 		uint32_t bits = rows_read();
 		if (!bits) {
@@ -192,4 +204,29 @@ uint8_t keypad_scan(int *row, int *col)
 	if (row) { *row = -1; }
 	if (col) { *col = -1; }
 	return KEY_NONE;
+}
+
+uint8_t keypad_scan(int *row, int *col)
+{
+	static uint8_t stable = KEY_NONE, pending = KEY_NONE;
+	static int stable_row = -1, stable_col = -1, pending_row = -1, pending_col = -1;
+	static int64_t pending_since;
+
+	int r, c;
+	uint8_t code = scan_once(&r, &c);
+
+	if (code != pending) {
+		pending = code;
+		pending_row = r;
+		pending_col = c;
+		pending_since = k_uptime_get();
+	} else if (code != stable && k_uptime_get() - pending_since >= KEY_DEBOUNCE_MS) {
+		stable = code;
+		stable_row = pending_row;
+		stable_col = pending_col;
+	}
+
+	if (row) { *row = stable_row; }
+	if (col) { *col = stable_col; }
+	return stable;
 }
