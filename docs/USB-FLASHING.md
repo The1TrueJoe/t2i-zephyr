@@ -60,6 +60,70 @@ print('ours:', s.read(4096)[:192]==ours)"
 
 Offsets 7 and 9 are the tell: stock reports `0x42`/`0x3c`, our captured blob has `0x10`/`0x27`.
 
+### How stock's updater actually commits — decompiled 2026-08-18
+
+Ghidra headless on `stock_flash_backup.bin` (base `0x08000000`). A commit needs **two** things, and
+stock writes the second one itself:
+
+| Condition | Where |
+|---|---|
+| internal marker at `0x0807FFFC` **erased** | so the bootloader does not just chain-load the app |
+| `0xCDAB3412` present at **SPI `0x01FFFFFC`** | what tells the bootloader an image is staged |
+
+**Bootloader `FUN_08000978`:**
+
+```c
+if (*(0x0807FFFC) == 0xCDAB3412)   // marker intact
+    jump 0x08004004;               // chain-load the app, done
+else {
+    read(&m, 0x01FFFFFC, 4);       // SPI marker
+    if (m == 0xCDAB3412)
+        copy 0x1F0 * 0x400 bytes   // 507904 = exactly 0x08004000..0x0807FFFF
+             from SPI 0x01F84000 -> flash 0x08004000;
+}
+```
+
+**App finalize `FUN_0801F7F0`** — note it *verifies by read-back* and silently does nothing on
+mismatch. No error, no reset, no commit:
+
+```c
+m = 0xCDAB3412;
+write(&m, 0x01FFFFFC, 4);
+flush();
+read(&back, 0x01FFFFFC, 4);
+if (back == m) {            // ONLY on a successful read-back
+    ...
+    invalidate(0x0807FFFC);
+    reset();
+}
+```
+
+**Data receiver `FUN_0801F714`** holds the trigger. State struct at `0x20002764`:
+`+0x00` cksum8, `+0x01` progress %, `+0x04` SPI write pointer, `+0x08` **declared**,
+`+0x0C` received, `+0x10` read-back verify buffer.
+
+```c
+last = (declared <= len + received);
+if (last) len = declared - received;     // clamp
+cksum8 += sum(bytes);                    // running 8-bit sum
+... erase on 4K/64K boundary crossings, write, read back, compare ...
+if (last && cksum8 == 0)                 // <-- the commit trigger
+    FUN_0801F7F0();
+```
+
+So stock commits on `received == declared && cksum8 == 0` — **the same rule `updater.c`
+implements**, and one `t2i_usb_uploader.py` satisfies by construction. Which means our uploads fail
+*upstream* of this: `declared` (`state+0x08`) is never set to what we assume. `FUN_0801F6C8`
+resets cksum, write-pointer and received but pointedly does **not** set `declared`, so the `0x82`
+start frame handler does — and that handler is the next thing to decompile.
+
+That also explains why replaying a byte-perfect stock image changed nothing: the payload was never
+the problem.
+
+Erasing is incremental, done inside `FUN_0801F714` as the write pointer crosses a 4 KB / 64 KB
+boundary — not an upfront wipe. That is why a *partial* transfer still destroys whatever was in the
+staging window, which is how `MstrBdrm ID 40` lost its configuration.
+
 ### Consequence for deployment
 
 **A radio remote needs SWD once to bootstrap.** The SWD unit only accepts USB updates because it
