@@ -120,6 +120,34 @@ start frame handler does — and that handler is the next thing to decompile.
 That also explains why replaying a byte-perfect stock image changed nothing: the payload was never
 the problem.
 
+#### `declared` is set conditionally, and the start can be refused
+
+`FUN_0801F6D8` is the `0x82` start handler:
+
+```c
+uint FUN_0801f6d8(uint declared) {
+    if (FUN_0800d0ca() != 0) return 1;      // refused - nothing below runs
+    *(uint *)(state + 8) = declared;        // only now is `declared` set
+    ...
+    FUN_0800d120(state->spi_ptr);           // erase the first sector
+    return (erase_ok ? 0 : 1);
+}
+```
+
+`FUN_0800D0CA` is a SPI-NOR transaction (mutex, chip-select, command `0x00`, read status) in the
+same family as `FUN_0800D074` (flush, command `0x8C`), `FUN_0800D120` (erase), `FUN_0800D1BE`
+(write) and `FUN_0800D296` (read). If it returns non-zero the update never starts, `declared` stays
+stale, and every data frame afterwards is a no-op.
+
+**Our uploader throws that answer away.** `t2i_usb_uploader.py` sends the `0x82` frame and calls
+`read_for(fd, 0.3)` without inspecting it, so a refusal is invisible and we send all 8062 frames
+regardless. Reading and reporting that reply is the next step, and it is the cheapest way to learn
+whether the start is being refused or `declared` is arriving wrong.
+
+**Caution before testing:** `0x82` erases the first sector as part of starting, and
+`FUN_0801F714` erases incrementally as the write pointer advances. There is no such thing as a
+harmless partial update — that is what cost `MstrBdrm ID 40` its configuration.
+
 Erasing is incremental, done inside `FUN_0801F714` as the write pointer crosses a 4 KB / 64 KB
 boundary — not an upfront wipe. That is why a *partial* transfer still destroys whatever was in the
 staging window, which is how `MstrBdrm ID 40` lost its configuration.
