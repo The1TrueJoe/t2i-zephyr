@@ -1,5 +1,36 @@
 # Zigbee Protocol B
 
+## LINK UP ON HARDWARE — 2026-08-18
+
+The host <-> EM250 link works from our firmware. Valid frames, checksums passing, `bad=0`:
+
+```
+ZBX rx     03 01 02                                     unsolicited event (app event 7)
+ZBX reply  61 0f 00 00 0b 03 ff ff 05 02 00 00 0a ...   0x60 -> 0x61, 15-byte payload
+ZBX reply  63 08 00 00 00 00 00 00 00 00                0x62 -> 0x63
+ZBX reply  05 1c ff c4 0b c1 05 00 6f 0d 00 ff fe ...   0x05 NETWORK INFO, 28 bytes
+```
+
+Two things had to be right, and both were wrong at first:
+
+1. **PC13 is the EM250's nRESET** and nothing was driving it. After an MCU reset the pin is an
+   input, so the radio sat whereever it happened to be. `zbx_uart_init()` now pulses it low and
+   releases it, as stock does in `FUN_0800BFB2` (low, `FUN_080113A4(0x578)` = 1.4 ms, high).
+2. **RX must be interrupt-driven.** USART3 here has no FIFO: the data register holds ONE byte, a
+   byte lands every ~87 us at 115200, and the main loop comes round every 10 ms. Polling kept
+   exactly one byte of every reply and overran the rest — which looked like a dead radio for
+   hours. The radio had been answering correctly the whole time.
+
+Diagnostics worth keeping (all in `zbx.c`, reported over USB):
+
+* `zbx_rx_line()` samples PC11 with a pull-down then a pull-up **before** USART3 takes the pin.
+  `1/1` = something is driving it, so the radio is present and powered; `0/1` = floating. This is
+  what ruled out "no module fitted" without opening the case.
+* `zbx_pclk1()` derives PCLK1 from RCC instead of assuming it. `ZBX_BRR` is stock's literal
+  `0x0104`, which is only 115200 if PCLK1 is 30 MHz — measured 30 MHz, baud 115384, 0.16% off.
+* `zbx_raw()` keeps the first raw bytes unframed, which is how the single-byte overrun was spotted.
+
+
 > Auto-saved from overnight research agent. Static analysis only — nothing here was tested on hardware.
 
 **Summary:** RTI's host↔EM250 link on USART3 is fully reversed at the byte level. UART is 115200 8N1, no flow control, TX+RX, RXNE interrupt, TX by DMA1 Stream3/Ch4 (USART_Init call at 0x08018DB0 driven from FUN_0800bfb2; BRR computes to 0x0104 at PCLK1=30 MHz, which I re-derived from the stock PLL config). The wire format is a byte-stuffed frame `0x81 <escaped payload> <escaped checksum> 0x82`, escape byte 0x80 emitted literally before any 0x80/0x81/0x82, checksum = two's complement of the 8-bit sum so sum(payload)+cksum ≡ 0. Encoder is FUN_08018A88, decoder FUN_08018B70 — they are exact mirrors. Inside the frame every message is `[opcode][payload_len][payload…]`; I enumerated the complete TX opcode set from the length table in FUN_080206F6 plus all 19 encoders, and the complete RX opcode set from the FUN_080194F4 dispatch plus all 14 parsers. A button press reaches the network only when the key's programmed command format is "System TW" (two-way): keypad task → CommandQ → _HandleHardkeyPress (FUN_08010450) → _ExecuteCmds (FUN_080105DC) → FUN_0801CDAA → "TwTc Client - SendSysCode" (FUN_0801D11E) → TWT session layer → FUN_0801944A → ZBX command 0x40. Plain IR and legacy "Sys RF" keys never touch the EM250 — FUN_08016830 is a bit-banged one-way RF transmitter, not ZigBee.

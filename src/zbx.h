@@ -60,4 +60,14 @@ size_t zbx_poll(const uint8_t **out);
 /* Frames seen / rejected, for bring-up on a unit that has a radio. */
 void zbx_stats(uint32_t *rx_frames, uint32_t *rx_bad, uint32_t *rx_bytes);
 
+/* First raw bytes seen on USART3 since boot, unframed. Diagnostic only. */
+size_t zbx_raw(uint8_t *out, size_t max);
+
+/* RX line level sampled at init with a pull-down then a pull-up, before USART3 takes the pin.
+ * 1/1 = something is driving it (a live radio idles high). 0/1 = floating, nothing there. */
+void zbx_rx_line(uint8_t *pd, uint8_t *pu);
+
+/* PCLK1 in Hz, computed from RCC. ZBX_BRR is only correct at 30 MHz. */
+uint32_t zbx_pclk1(void);
+
 #endif

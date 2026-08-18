@@ -20,6 +20,7 @@
  * is not established (doc §10) and needs a unit that has the radio.
  */
 #include <zephyr/kernel.h>
+#include <zephyr/irq.h>
 #include <string.h>
 #include "t2i_regs.h"
 #include "zbx.h"
@@ -211,6 +212,8 @@ bool zbx_selftest(void)
 #define USART3_BRR  REG32(USART3_BASE + 0x08)
 #define USART3_CR1  REG32(USART3_BASE + 0x0C)
 
+#define CR1_RXNEIE (1u << 5)
+#define SR_ORE  (1u << 3)
 #define SR_RXNE (1u << 5)
 #define SR_TXE  (1u << 7)
 #define SR_TC   (1u << 6)
@@ -220,6 +223,56 @@ bool zbx_selftest(void)
 
 static struct zbx_rx rx_state;
 static uint32_t st_frames, st_bad, st_bytes;
+
+/* Last raw bytes off the wire, before any framing. The frame counters alone cannot tell
+ * "the radio is silent" from "the radio is talking and we are misframing it", and those need
+ * completely different fixes. */
+#define ZBX_RAW_KEEP 24
+static uint8_t raw_ring[ZBX_RAW_KEEP];
+static uint8_t raw_n;
+
+static uint8_t rx_idle_pd, rx_idle_pu;
+
+void zbx_rx_line(uint8_t *pd, uint8_t *pu) { *pd = rx_idle_pd; *pu = rx_idle_pu; }
+
+/* What PCLK1 actually is, derived from RCC rather than assumed.
+ *
+ * ZBX_BRR is stock's literal 0x0104, which only yields 115200 if PCLK1 is 30 MHz. If our Zephyr
+ * clock tree differs the baud is wrong, and a wrong baud looks exactly like what we are seeing:
+ * the radio is plainly alive (its TX idles high) yet only a single framing-error byte ever
+ * arrives per burst. */
+#define RCC_CFGR_REG REG32(0x40023800u + 0x08)
+#define RCC_PLLCFGR  REG32(0x40023800u + 0x04)
+
+uint32_t zbx_pclk1(void)
+{
+	uint32_t cfgr = RCC_CFGR_REG, pll = RCC_PLLCFGR;
+	uint32_t src = (cfgr >> 2) & 3u;
+	uint32_t sysclk;
+
+	if (src == 2u) {                      /* PLL */
+		uint32_t m = pll & 0x3F, n = (pll >> 6) & 0x1FF;
+		uint32_t pdiv = (((pll >> 16) & 3u) + 1u) * 2u;
+		uint32_t in = (pll & (1u << 22)) ? HSE_VALUE : 16000000u;
+
+		sysclk = m ? (in / m) * n / pdiv : 0;
+	} else {
+		sysclk = (src == 1u) ? HSE_VALUE : 16000000u;
+	}
+	uint32_t hpre = (cfgr >> 4) & 0xF;
+	uint32_t ahb = sysclk >> ((hpre & 8u) ? ((hpre & 7u) + 1u + ((hpre == 0xC) ? 1u : 0u)) : 0u);
+	uint32_t ppre1 = (cfgr >> 10) & 7u;
+
+	return (ppre1 & 4u) ? (ahb >> ((ppre1 & 3u) + 1u)) : ahb;
+}
+
+size_t zbx_raw(uint8_t *out, size_t max)
+{
+	size_t n = raw_n < max ? raw_n : max;
+
+	memcpy(out, raw_ring, n);
+	return n;
+}
 
 static void pc_af7(int pin)
 {
@@ -231,10 +284,65 @@ static void pc_af7(int pin)
 				 | (7u << ((pin - 8) * 4));
 }
 
+/* Frames completed by the ISR, waiting for the main loop. */
+#define ZBX_Q 4
+static struct { uint8_t buf[ZBX_MAX_PAYLOAD]; uint8_t len; } done_q[ZBX_Q];
+static volatile uint8_t q_head, q_tail;
+
+/* USART3 RX interrupt.
+ *
+ * Polling cannot work here and that cost real time to see: the data register holds ONE byte, a
+ * byte lands every ~87us at 115200, and the main loop comes round every 10ms. The radio was
+ * replying correctly the whole time and we were keeping one byte of each answer and overrunning
+ * the rest. */
+static void zbx_isr(const void *arg)
+{
+	ARG_UNUSED(arg);
+
+	while (USART3_SR & (SR_RXNE | SR_ORE)) {
+		uint8_t b = (uint8_t)(USART3_DR & 0xFF);   /* reading DR also clears ORE */
+		size_t len = zbx_rx_byte(&rx_state, b);
+
+		st_bytes++;
+		if (raw_n < ZBX_RAW_KEEP) {
+			raw_ring[raw_n++] = b;
+		}
+		if (len) {
+			uint8_t nh = (uint8_t)((q_head + 1u) % ZBX_Q);
+
+			if (nh != q_tail) {
+				memcpy(done_q[q_head].buf, rx_state.buf, len);
+				done_q[q_head].len = (uint8_t)len;
+				q_head = nh;
+				st_frames++;
+			} else {
+				st_bad++;      /* queue full: the main loop is not draining */
+			}
+		}
+	}
+}
+
 void zbx_uart_init(void)
 {
 	RCC_AHB1ENR |= RCC_AHB1ENR_GPIO(GPIO_PORT_C);
 	RCC_APB1ENR |= (1u << 18);              /* USART3EN */
+
+	/* Is anything actually driving RX?
+	 *
+	 * A powered EM250 holds its TX (our PC11) HIGH when idle, so it reads 1 whichever way we
+	 * pull it. A line nobody drives just follows the pull. Worth knowing before blaming framing:
+	 * every byte we have received so far is a single 0x81 arriving exactly when WE transmit,
+	 * which is what a floating input next to a switching pin looks like. */
+	GPIO_MODER(GPIO_PORT_C) &= ~(3u << (11 * 2));                 /* input */
+	GPIO_PUPDR(GPIO_PORT_C) = (GPIO_PUPDR(GPIO_PORT_C) & ~(3u << (11 * 2)))
+				  | (2u << (11 * 2));                 /* pull-DOWN */
+	k_busy_wait(2000);
+	rx_idle_pd = (GPIO_IDR(GPIO_PORT_C) >> 11) & 1u;
+	GPIO_PUPDR(GPIO_PORT_C) = (GPIO_PUPDR(GPIO_PORT_C) & ~(3u << (11 * 2)))
+				  | (1u << (11 * 2));                 /* pull-UP */
+	k_busy_wait(2000);
+	rx_idle_pu = (GPIO_IDR(GPIO_PORT_C) >> 11) & 1u;
+	GPIO_PUPDR(GPIO_PORT_C) &= ~(3u << (11 * 2));                 /* back to no pull */
 
 	pc_af7(10);                             /* PC10 = TX (host -> radio) */
 	pc_af7(11);                             /* PC11 = RX (radio -> host) */
@@ -242,6 +350,10 @@ void zbx_uart_init(void)
 	USART3_BRR = ZBX_BRR;
 	USART3_CR1 = (1u << 13) | (1u << 3) | (1u << 2);   /* UE | TE | RE, 8N1 */
 	memset(&rx_state, 0, sizeof rx_state);
+
+	IRQ_CONNECT(39, 5, zbx_isr, NULL, 0);              /* USART3_IRQn on STM32F2 */
+	irq_enable(39);
+	USART3_CR1 |= CR1_RXNEIE;
 
 	/* Release the radio from reset.
 	 *
@@ -255,9 +367,10 @@ void zbx_uart_init(void)
 	k_msleep(5);                                /* stock uses ~1.4ms; longer is free */
 	GPIO_BSRR(GPIO_PORT_C) = 1u << 13;          /* release */
 
-	/* The EM250 has to boot its own stack before it can answer. Stock never talks to it this
-	 * early, so this delay is ours and is a guess worth revisiting if the link stays quiet. */
-	k_msleep(500);
+	/* The EM250 has to boot its own stack before it can answer. Stock releases reset and then
+	 * goes on to configure the network, so it never measures this; 500ms was a guess and the
+	 * link stayed silent, so give it well past anything plausible. */
+	k_msleep(2000);
 	memset(&rx_state, 0, sizeof rx_state);
 }
 
@@ -297,19 +410,14 @@ bool zbx_send(const uint8_t *payload, size_t len)
 
 size_t zbx_poll(const uint8_t **out)
 {
-	/* Bounded per call so a stuck-high RX line cannot starve the main loop. */
-	for (int guard = 0; guard < 256 && (USART3_SR & SR_RXNE); guard++) {
-		uint8_t b = (uint8_t)(USART3_DR & 0xFF);
-		size_t len = zbx_rx_byte(&rx_state, b);
+	if (q_tail != q_head) {
+		size_t n = done_q[q_tail].len;
 
-		st_bytes++;
-		if (len) {
-			st_frames++;
-			if (out) {
-				*out = rx_state.buf;
-			}
-			return len;
+		if (out) {
+			*out = done_q[q_tail].buf;
 		}
+		q_tail = (uint8_t)((q_tail + 1u) % ZBX_Q);
+		return n;
 	}
 	return 0;
 }

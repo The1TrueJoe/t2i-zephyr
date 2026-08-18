@@ -95,6 +95,7 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 
 /* How often to report the radio link over USB. */
 #define ZBX_REPORT_MS 10000
+#define ZBX_PROBE 1   /* cycle through zero-payload queries, looking for any reply */
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
@@ -260,6 +261,19 @@ int main(void)
 		zbx_uart_init();
 		safety_watchdog_feed();
 		updater_emit(zbx_selftest() ? "ZBX selftest PASS" : "ZBX selftest FAIL");
+		{
+			uint8_t pd, pu;
+			char lb[64];
+
+			zbx_rx_line(&pd, &pu);
+			uint32_t pclk = zbx_pclk1();
+
+			snprintf(lb, sizeof(lb), "ZBX pclk1=%u baud=%u", pclk, pclk / 260u);
+			updater_emit(lb);
+			snprintf(lb, sizeof(lb), "ZBX rx-line pulldown=%u pullup=%u (%s)", pd, pu,
+				 (pd && pu) ? "DRIVEN - radio present" : "FLOATING - nothing driving");
+			updater_emit(lb);
+		}
 		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
 		updater_emit(idb);
 	}
@@ -324,7 +338,13 @@ int main(void)
 
 			zbx_last_report = k_uptime_get();
 			zbx_stats(&f, &bad, &by);
-			snprintf(line, sizeof(line), "ZBX frames=%u bad=%u bytes=%u", f, bad, by);
+			uint8_t raw[24];
+			size_t rn = zbx_raw(raw, sizeof raw);
+			int w = snprintf(line, sizeof(line), "ZBX frames=%u bad=%u bytes=%u raw:", f, bad, by);
+
+			for (size_t k = 0; k < rn && w < (int)sizeof(line) - 4; k++) {
+				w += snprintf(line + w, sizeof(line) - (size_t)w, " %02x", raw[k]);
+			}
 			updater_emit(line);
 
 			/* Display state, repeated rather than printed once at boot: the boot banner is
@@ -334,11 +354,41 @@ int main(void)
 				 hx8347_panel_id(), hx8347_backlight_pct(), st.als, st.als_avg);
 			updater_emit(line);
 
-			/* Re-probe: 0x60 takes no payload and its reply is 0x61, so a single answer
-			 * proves the link. Read-only — nothing here can change the network. */
-			static const uint8_t q60[] = { 0x60, 0x00 };
+			/* Probe DISABLED for this test. Every raw byte we have seen is 0x81, arriving at
+			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
+			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
+			 * RX), not the radio, and no amount of framing work would ever have helped. */
+			if (ZBX_PROBE) {
+				/* Every one of these takes no payload and cannot change the network.
+				 * The 0x6x family is strictly paired (reply = request + 1), so any
+				 * answer at all proves the link. Cycling because a silent radio and a
+				 * radio that ignores one particular opcode look identical. */
+				static const uint8_t queries[][2] = {
+					{ 0x60, 0x00 }, { 0x62, 0x00 },
+					{ 0x02, 0x00 }, { 0x04, 0x00 },
+				};
+				static uint8_t qi;
 
-			zbx_send(q60, sizeof q60);
+				snprintf(line, sizeof(line), "ZBX probe 0x%02x", queries[qi][0]);
+				updater_emit(line);
+				zbx_send(queries[qi], 2);
+
+				/* Drain hard, immediately. USART3 here is polled with no RX interrupt and
+				 * no DMA, so the data register holds exactly one byte: at 115200 a reply
+				 * byte lands every ~87us, while the main loop comes round every 10ms. Every
+				 * reply we have "not received" was almost certainly received and then
+				 * overrun, leaving the single byte we kept seeing. */
+				for (int w = 0; w < 200; w++) {
+					const uint8_t *fr;
+					size_t fl = zbx_poll(&fr);
+
+					if (fl) {
+						zbx_report(fr, fl, "reply");
+					}
+					k_busy_wait(500);
+				}
+				qi = (qi + 1) % (sizeof(queries) / sizeof(queries[0]));
+			}
 		}
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
