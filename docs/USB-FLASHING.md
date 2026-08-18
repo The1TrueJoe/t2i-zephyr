@@ -152,6 +152,32 @@ Erasing is incremental, done inside `FUN_0801F714` as the write pointer crosses 
 boundary — not an upfront wipe. That is why a *partial* transfer still destroys whatever was in the
 staging window, which is how `MstrBdrm ID 40` lost its configuration.
 
+### Integration Designer CAN update it; our uploader still cannot — 2026-08-18
+
+ID reloaded the firmware on the radio unit successfully. The `0x83` info reply proves it: bytes 7/9
+went from `0x42 0x3c` (the original stock build) to `0x20 0x2b` (the build ID pushed). Ours would
+be `0x10 0x27`.
+
+Immediately afterwards, a full `t2i_usb_uploader.py --image` run **still did not commit**.
+
+What that rules out, and it is most of the earlier suspicion:
+
+* the SPI-NOR is healthy, so `FUN_0800D0CA` is not failing and the start is not being refused
+* the bootloader commit path works
+* the unit is not damaged
+
+So the gap is in **our protocol**, not the hardware. ID does something the uploader does not.
+
+Also established: **stock sends no reply to `0x82`.** `--start-only` returned 0 bytes, so accepted
+and refused are indistinguishable from the host, and `FUN_0801F6D8`'s return value never reaches
+USB. The original uploader discarding that read was not the bug.
+
+**Next step: capture what ID actually sends.** USBPcap + Wireshark on the Windows VM while ID
+performs an update gives the exact frame sequence, and diffing that against `upload()` in
+`t2i_usb_uploader.py` ends the guesswork. Static analysis has gone as far as it usefully can here —
+`FUN_0801F6D8` has no resolvable callers and no function-pointer table entry, so the USB command
+dispatch is indirect in a way Ghidra has not cracked.
+
 ### Consequence for deployment
 
 **A radio remote needs SWD once to bootstrap.** The SWD unit only accepts USB updates because it

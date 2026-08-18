@@ -139,6 +139,12 @@ def main():
                    "a valid footer/checksum is appended")
     g.add_argument("--probe", action="store_true", help="SAFE: send only the 0x83 init and print "
                    "the reply (no erase/commit) — confirms we're speaking the protocol")
+    g.add_argument("--start-only", action="store_true",
+                   help="DESTRUCTIVE: send 0x83 then 0x82 (start) and print the reply, sending NO "
+                        "data frames. Stock's 0x82 handler (FUN_0801F6D8) refuses the update and "
+                        "returns 1 when its SPI check fails, and the normal upload path throws "
+                        "that answer away — this is how you see it. It still erases the first "
+                        "sector, so it is not a safe probe; see docs/USB-FLASHING.md.")
     ap.add_argument("--dev", help="serial device (default: first /dev/cu.usbmodem*)")
     ap.add_argument("--size", type=lambda x: int(x, 0), default=507906,
                     help="total payload size (default 507906 = 8062*63, from capture)")
@@ -157,6 +163,24 @@ def main():
                 print("  got a reply (decode above); protocol likely working.")
             else:
                 print("  no reply — see notes; may need pyusb/raw-EP or a different framing.")
+        finally:
+            os.close(fd)
+    elif a.start_only:
+        fd = open_serial(dev)
+        try:
+            os.set_blocking(fd, False)
+            write_all(fd, frame(0x83, bytes([0x81, 0x80])))
+            info = read_for(fd, 2.0)
+            print(f"0x83 info reply: {len(info)}B")
+            declared = a.size - 1
+            print(f"sending 0x82 start, declared={declared} (0x{declared:08X})")
+            write_all(fd, frame(0x82, bytes([0x00, 0x01]) + struct.pack("<I", declared)))
+            reply = read_for(fd, 3.0)
+            print(f"0x82 reply: {len(reply)}B  {reply[:64].hex() or '(nothing)'}")
+            if not reply:
+                print("  -> no answer. Either the start was accepted silently, or the reply "
+                      "rides a channel we are not reading.")
+            print("NO data frames were sent. The first sector has been erased regardless.")
         finally:
             os.close(fd)
     elif a.replay:
