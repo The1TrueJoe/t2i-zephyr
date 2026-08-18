@@ -210,6 +210,36 @@ commits (`T2i fw offset2-B-via-usb` came back after an upload, having been SWD-f
 The data frames were always correct: state 7 dispatches `FUN_0801F714(r4+1, 0x3f)` — 63 bytes at
 offset 1, length hardcoded in the firmware, which is what the uploader already sent.
 
+### Remaining blocker: the macOS CDC transport drops mid-transfer
+
+With `declared` fixed, stock finally *processes* our frames — and that exposed a second, unrelated
+problem. Somewhere between frame ~4000 and ~6300 (it varies run to run) macOS returns
+`ENXIO / "Device not configured"` on write. The remote is fine: it answers `0x83` immediately
+afterwards.
+
+The bytes already queued are **lost**, so the device's byte count and checksum end up short, the
+last-block branch never fires, and it silently does not finalize — the same end state as the
+original bug, for a completely different reason.
+
+Tried, none sufficient on its own:
+
+| Attempt | Result |
+|---|---|
+| pacing at ID's measured 1.98 ms/frame | still drops |
+| no pacing at all | still drops |
+| blocking writes (`set_blocking(fd, True)`) | still drops — macOS errors rather than waiting |
+| 1.5 s pause at each 64 KB erase boundary | still drops, ~180 frames past a boundary |
+| reconnect and resume from the same frame | transfer completes, but the lost bytes mean no commit |
+
+Why our own firmware never showed this: `updater.c` erases the whole 512 KB staging window **up
+front** in `start()`, so there are no mid-transfer stalls. Stock erases **incrementally** as the
+write pointer advances, stalling ~1 s per sector, and that is what overruns the host buffer.
+
+**Most promising next step:** upload over **WinUSB from Windows**, which is exactly what
+Integration Designer does — raw bulk transfers, no CDC layer in the path. The T2i is already bound
+to WinUSB there (see [WINDOWS-ID-SETUP.md](WINDOWS-ID-SETUP.md)), so it needs a small `pyusb`
+script rather than any new driver work. ID moves the same 8064 frames in 16 s with no drops.
+
 #### ETW capture of a real ID update — 2026-08-18
 
 `logman` + `tracerpt` with `Microsoft-Windows-USB-USBXHCI` (driver-free, works on ARM64 where

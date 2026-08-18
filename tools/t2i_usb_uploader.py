@@ -33,6 +33,18 @@ Test on the SWD-connected unit first (SWD verifies the commit / un-bricks).
 import os, sys, glob, struct, time, termios, select, signal, argparse
 
 END_MAGIC = bytes.fromhex("1234abcd")
+# Per-frame delay, measured from a real Integration Designer update captured over ETW:
+# 8064 frames in 16.0 s = 1.98 ms/frame. Going faster is not a speed win, it is a reset: at
+# 0.6 ms/frame the remote rebooted around frame 6300 every time, mid-transfer.
+PACE_S = 0.002
+
+# Where the remote stops listening. FUN_0801F714 erases a 64 KB SPI sector whenever the staging
+# write pointer crosses a 0x10000 boundary, and a sector erase takes on the order of a second.
+# During it the device drains no USB, the host CDC buffer fills, and macOS returns ENXIO and throws
+# the queued bytes away -- which is why uploads died at a random frame and never finalized.
+# Staging starts at SPI 0x01F84000 (bootloader literal DAT_08000A74).
+SPI_STAGE_BASE = 0x01F84000
+ERASE_PAUSE_S = 1.5
 FRAME = 64
 DATA_PER_FRAME = 63
 
@@ -79,7 +91,28 @@ def frame(type_byte, body=b""):
     b[1:1+len(body)] = body[:FRAME-1]
     return bytes(b)
 
-def write_all(fd, data):
+def write_all(fd, data, retries=200):
+    """Write, tolerating a device that stops accepting while it erases.
+
+    Stock erases a 64 KB SPI sector as the write pointer crosses a boundary, which takes on the
+    order of a second. During that it stops draining USB, macOS's CDC buffer fills, and a blind
+    write returns ENXIO ("Device not configured") rather than blocking — which killed an upload
+    around frame 6000 every time. Waiting for writability and retrying rides it out."""
+    mv = memoryview(data); off = 0
+    while off < len(mv):
+        try:
+            off += os.write(fd, mv[off:])
+        except BlockingIOError:
+            select.select([], [fd], [], 1.0)
+        except OSError as e:
+            if e.errno != 6 or retries <= 0:
+                raise
+            retries -= 1
+            select.select([], [fd], [], 0.05)
+    return
+
+
+def _write_all_unused(fd, data):
     mv = memoryview(data); off = 0
     while off < len(mv):
         try:
@@ -103,7 +136,12 @@ def upload(dev, payload, declared):
         print(f"warning: payload {len(payload)} not a multiple of {DATA_PER_FRAME}")
     fd = open_serial(dev)
     try:
-        os.set_blocking(fd, False)
+        # BLOCKING writes on purpose. With O_NONBLOCK, macOS's CDC driver returns ENXIO
+        # ("Device not configured") the moment its buffer fills while the remote is busy erasing
+        # a 64 KB sector — and the bytes already queued are lost, so the device's byte count and
+        # checksum end up short and it silently never finalizes. Blocking makes the kernel wait
+        # for the device instead of throwing the transfer away.
+        os.set_blocking(fd, True)
         # 1) init
         write_all(fd, frame(0x83, bytes([0x81, 0x80])))
         info = read_for(fd, 1.5)
@@ -120,11 +158,49 @@ def upload(dev, payload, declared):
         n = len(payload) // DATA_PER_FRAME
         print(f"sending {len(payload)} bytes in {n} data frames...")
         t0 = time.time()
-        for i in range(n):
-            write_all(fd, frame(0x80, payload[i*DATA_PER_FRAME:(i+1)*DATA_PER_FRAME]))
+        reconnects = 0
+        i = 0
+        while i < n:
+            try:
+                write_all(fd, frame(0x80, payload[i*DATA_PER_FRAME:(i+1)*DATA_PER_FRAME]))
+            except OSError as e:
+                # ENXIO here is the HOST's CDC endpoint giving up, not the remote dying: it still
+                # answers 0x83 afterwards. The device stays in its receive state, so reopening the
+                # port and continuing from the same frame resumes the transfer rather than
+                # restarting it. Without this the upload dies at a random frame every time.
+                if e.errno != 6 or reconnects >= 40:
+                    raise
+                reconnects += 1
+                print(f"\n  CDC dropped at frame {i}/{n}; reopening ({reconnects})...", flush=True)
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                time.sleep(1.0)
+                for _ in range(60):
+                    try:
+                        fd = open_serial(find_port(None))
+                        os.set_blocking(fd, False)
+                        break
+                    except (SystemExit, OSError):
+                        time.sleep(1.0)
+                else:
+                    raise
+                continue
+            i += 1
+            # Pace to roughly what the device can absorb. Without this we outrun its SPI writes
+            # and overflow the host-side buffer long before the transfer ends.
+            if PACE_S:
+                time.sleep(PACE_S)
+            # About to cross a 64 KB sector boundary: give the device time to erase it.
+            a0 = SPI_STAGE_BASE + i * DATA_PER_FRAME
+            if (a0 >> 16) != ((a0 + DATA_PER_FRAME) >> 16):
+                print(f"  ... 64K boundary at 0x{a0 + DATA_PER_FRAME:08X}, pausing for erase",
+                      flush=True)
+                time.sleep(ERASE_PAUSE_S)
             if i % 1000 == 0:
-                r = read_for(fd, 0.0)  # drain any acks
-                print(f"  frame {i}/{n}")
+                read_for(fd, 0.0)  # drain any acks
+                print(f"  frame {i}/{n}", flush=True)
         print(f"done in {time.time()-t0:.1f}s. Draining final reply...")
         print("final reply:", read_for(fd, 2.0)[:48].hex())
         print("Device should now stage->finalize->reset->commit. VERIFY over SWD.")
