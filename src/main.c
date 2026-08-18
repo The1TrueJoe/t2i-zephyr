@@ -65,6 +65,7 @@ void hx8347_backlight_state(uint32_t *out);
 #define BRICK_TEST 0
 
 #define IR_ENABLE_TEST 0   /* browns the remote out — see below */
+#define KEY_HOLD_MS 400  /* a press this long is a hold, not a click */
 #define LED_HOLD_MS 3000 /* how long a charger state must hold before the LED follows */
 #define DEBUG_HOLD_MS 3000
 
@@ -208,6 +209,8 @@ int main(void)
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
 	int last_led = -1, led_pending = -1;
+	int64_t key_down_at = 0;
+	bool key_held_sent = false;
 	int64_t led_since = 0;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
@@ -244,6 +247,9 @@ int main(void)
 			updater_emit(ev);
 			last_reported_key = st.key;
 
+			key_down_at = (st.key != KEY_NONE) ? k_uptime_get() : 0;
+			key_held_sent = false;
+
 			/* Info toggles the full bring-up dump. */
 			if (st.key == KEY_INFO) {
 				st.debug = !st.debug;
@@ -259,6 +265,21 @@ int main(void)
 				ir_send_nec(0x00, 0x15);
 				updater_emit("IR sent NEC 00 15");
 			}
+		}
+
+		/* A held key, reported once when it crosses the threshold.
+		 *
+		 * This has to happen here and not host-side: a Juno driver runs in a sandbox with no
+		 * clock, so it can see DOWN and UP but cannot time the gap between them. Without this
+		 * line nothing downstream can tell a tap from a hold, and a hold-to-ramp rule has
+		 * nothing to start on. */
+		if (st.key != KEY_NONE && !key_held_sent && key_down_at &&
+		    k_uptime_get() - key_down_at >= KEY_HOLD_MS) {
+			char ev[48];
+
+			snprintf(ev, sizeof(ev), "KEY HELD %u %s", st.key, st.key_name);
+			updater_emit(ev);
+			key_held_sent = true;
 		}
 
 		/* debug key: hold to arm the watchdog self-test */

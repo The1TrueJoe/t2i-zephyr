@@ -1,0 +1,30 @@
+[driver]
+id = "rti.t2i.remote"
+name = "RTI T2i Remote"
+manufacturer = "RTI"
+version = "0.1.0"
+runtime = "wasm"
+
+# One binding for the whole handset. Which button was pressed is a parameter, not a device — see
+# `remote`'s own note on why splitting a remote into 53 objects would be 53 tiles nobody wants.
+[[proxy]]
+id = 1
+type = "remote"
+primary = true
+# Every flag here is a claim about the hardware, checked against the keypad matrix in
+# ../../src/keypad.c: all 53 codes are populated and named. `has_hold` is real because the
+# firmware reports KEY DOWN and KEY UP as separate events, which is what lets a held `Vol +`
+# become a ramp instead of forty steps.
+#
+# `has_repeat` is deliberately false. The firmware does not stream while a key is held — it sends
+# one DOWN and one UP — and claiming otherwise would have core's own lint flag it, correctly.
+#
+# `has_dimming` is false: the T2i has no brighter/dimmer keys. Its `Vol +/-` are volume, and
+# mapping them to dim_up/dim_down as well would make one key mean two things.
+capabilities = { has_transport = true, has_dpad = true, has_numeric = true, has_channel = true, has_volume = true, has_power = true, has_menu = true, has_hold = true, has_repeat = false, has_dimming = false, has_battery = true, custom_labels = "Soft Lft,Soft Lft Cntr,Soft Rht Cntr,Soft Rht,Red,Green,Yellow,Blue,List,-/." }
+
+# The remote presents a USB CDC-ACM port. Path A in ../docs/JUNO-INTEGRATION.md: real today, and
+# tethered, which is wrong for a remote — it is the radio path that makes this untethered, and that
+# is still gated on the EM250's over-the-air format.
+[[transport]]
+kind = "serial"

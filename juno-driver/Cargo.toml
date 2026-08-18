@@ -1,0 +1,30 @@
+[package]
+name = "juno-driver-rti-t2i"
+version = "0.1.0"
+edition = "2024"
+description = "RTI T2i remote as a Juno `remote`"
+publish = false
+
+[lib]
+name = "juno_driver_rti_t2i"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Tracks `main` by branch with the lockfile holding the exact commit: driver-sdk carries no tags
+# on purpose while the contracts are still moving.
+driver-sdk = { git = "https://github.com/junohouse/driver-sdk", branch = "main" }
+serde_json = "1"
+
+# Working on the contract and this driver at once — point the SDK at the local checkout:
+#   [patch."https://github.com/junohouse/driver-sdk"]
+#   driver-sdk = { path = "../../../Juno/driver-sdk" }
+
+# A driver is downloaded per project and spends its life waiting on a device, so build for size.
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+lto = true
+strip = true
+
+[patch."https://github.com/junohouse/driver-sdk"]
+driver-sdk = { path = "/Users/joeytelaak/Documents/Juno/driver-sdk" }

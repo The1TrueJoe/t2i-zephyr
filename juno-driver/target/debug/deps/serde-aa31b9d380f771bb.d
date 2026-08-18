@@ -1,0 +1,14 @@
+/Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/deps/serde-aa31b9d380f771bb.d: /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/build/serde-5e0e6757a7d91238/out/private.rs
+
+/Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/deps/libserde-aa31b9d380f771bb.rlib: /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/build/serde-5e0e6757a7d91238/out/private.rs
+
+/Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/deps/libserde-aa31b9d380f771bb.rmeta: /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/build/serde-5e0e6757a7d91238/out/private.rs
+
+/Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/joeytelaak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/build/serde-5e0e6757a7d91238/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/joeytelaak/Documents/GitHub/t2i-zephyr/juno-driver/target/debug/build/serde-5e0e6757a7d91238/out
