@@ -16,6 +16,9 @@
 #define PMARK(off, v) (*(volatile uint32_t *)(0x2001FF8C + (off)) = (uint32_t)(v))
 
 /* Idle this long with no touch, key or motion before sleeping. */
+/* Set to 0 to never sleep. Useful while bringing up a unit whose screen you are trying to
+ * observe: 30s of display followed by black looks exactly like a broken backlight, and on a
+ * remote with no SWD there is no other way to see what it is doing. */
 #define SLEEP_AFTER_MS 30000
 
 /* Backlight levels, 0..255.
@@ -82,7 +85,7 @@ bool power_tick(bool activity, const char *source)
 			PMARK(0x08, wake_count_total);
 			return false;
 		}
-	} else if (!never_sleep &&
+	} else if (SLEEP_AFTER_MS && !never_sleep &&
 		   k_uptime_get() - last_active > SLEEP_AFTER_MS) {
 		display_blanking_on(display);    /* panel off = truly black, like stock */
 		funlight_sleep();                /* stock holds PA10 low while asleep */

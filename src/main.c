@@ -214,6 +214,7 @@ int main(void)
 
 	ui_init(disp, SPLASH_MS);
 	safety_watchdog_feed();
+
 	MARK(0x00, 2);
 
 	touch_init();
@@ -324,6 +325,13 @@ int main(void)
 			zbx_last_report = k_uptime_get();
 			zbx_stats(&f, &bad, &by);
 			snprintf(line, sizeof(line), "ZBX frames=%u bad=%u bytes=%u", f, bad, by);
+			updater_emit(line);
+
+			/* Display state, repeated rather than printed once at boot: the boot banner is
+			 * unobservable on a USB-only unit (the CDC port stalls ~25s on open), which is
+			 * exactly the situation a dark screen leaves you in. */
+			snprintf(line, sizeof(line), "DISP panel=0x%04x bl=%d%% als=%d~%d",
+				 hx8347_panel_id(), hx8347_backlight_pct(), st.als, st.als_avg);
 			updater_emit(line);
 
 			/* Re-probe: 0x60 takes no payload and its reply is 0x61, so a single answer

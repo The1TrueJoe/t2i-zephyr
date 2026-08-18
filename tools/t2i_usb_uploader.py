@@ -48,7 +48,28 @@ class RawUsb:
     Interface 0 is CDC Data (class 0x0A) with bulk EP 0x03 OUT / 0x81 IN.
     """
 
-    EP_OUT, EP_IN, IFACE = 0x03, 0x81, 0
+    def _discover(self, usb):
+        """Find the CDC-Data interface and its bulk endpoints.
+
+        These are NOT fixed. Stock RTI puts CDC Data (class 0x0A) on interface 0 with EP 0x03/0x81;
+        Zephyr's CDC-ACM in our own firmware numbers them the other way round. Hardcoding stock's
+        layout worked right up until we tried to re-flash a remote already running our build, which
+        then failed with 'Invalid endpoint address 0x3'."""
+        for cfg in self.dev:
+            for intf in cfg:
+                if intf.bInterfaceClass != 0x0A:      # CDC Data
+                    continue
+                out = in_ = None
+                for ep in intf:
+                    if (ep.bmAttributes & 3) != 2:    # bulk only
+                        continue
+                    if ep.bEndpointAddress & 0x80:
+                        in_ = ep.bEndpointAddress
+                    else:
+                        out = ep.bEndpointAddress
+                if out is not None and in_ is not None:
+                    return intf.bInterfaceNumber, out, in_
+        raise SystemExit("no CDC-Data interface with bulk endpoints found")
 
     def __init__(self):
         import usb.core, usb.util, usb.backend.libusb1
@@ -61,10 +82,11 @@ class RawUsb:
         self.dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
         if self.dev is None:
             raise SystemExit("no %04x:%04x on USB" % (VID, PID))
-        try:
-            self.dev.set_configuration()
-        except Exception:
-            pass          # already configured, which is the normal case
+        # Do NOT call set_configuration(): the device is already configured by the OS, and on
+        # macOS re-issuing it returns ENODEV and poisons the handle.
+        self.IFACE, self.EP_OUT, self.EP_IN = self._discover(usb)
+        print("raw bulk: iface %d, OUT 0x%02x, IN 0x%02x"
+              % (self.IFACE, self.EP_OUT, self.EP_IN))
         usb.util.claim_interface(self.dev, self.IFACE)
 
     def write(self, data, timeout=10000):

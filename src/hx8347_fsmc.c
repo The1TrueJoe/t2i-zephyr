@@ -43,6 +43,9 @@
 #define BL_MIN_PULSE_US 5
 #define BL_MAX_HZ       30000    /* inaudible */
 #define BL_MIN_HZ       2000     /* stock RTI */
+/* The frequency we actually drive. Stock's value, and not negotiable without testing on a radio
+ * unit: at 30 kHz one would not light at any duty, while lighting instantly at static full-on. */
+#define BL_STOCK_HZ     2000
 #define BL_TIMER_HZ     60000000 /* TIM2 clock with PSC = 0 */
 
 static void pin_af(int port, int pin, int af)
@@ -157,12 +160,18 @@ static void backlight_set(int pct)
 		return;
 	}
 
-	/* highest frequency whose ON pulse still clears BL_MIN_PULSE_US */
-	uint32_t hz = (uint32_t)pct * (1000000u / BL_MIN_PULSE_US) / 100u;
-	if (hz > BL_MAX_HZ) { hz = BL_MAX_HZ; }
-	if (hz < BL_MIN_HZ) { hz = BL_MIN_HZ; }
-
-	uint32_t arr = BL_TIMER_HZ / hz;       /* TIM2 is 32-bit, so this always fits */
+	/* Fixed 2 kHz, which is what stock uses (FUN_0801A9FA, docs/BACKLIGHT.md §6).
+	 *
+	 * This used to raise the frequency with duty, up to BL_MAX_HZ = 30 kHz, to keep the ON pulse
+	 * comfortably long. On the bench unit that lit fine. On a radio unit it did not light AT ALL:
+	 * PC12 up (keypad backlight lit), PA1 in AF, TIM2 running at 69% — and a black screen, which
+	 * reads exactly like a latched driver and cost hours on that assumption. Driving the same pin
+	 * static-high lit it instantly, so the string and the driver were always fine and 30 kHz was
+	 * simply too fast for that unit's dim input.
+	 *
+	 * 2 kHz needs no duty-dependent cleverness: even 1% is a 5 us pulse, which clears
+	 * BL_MIN_PULSE_US. Match stock and stop guessing. */
+	uint32_t arr = BL_TIMER_HZ / BL_STOCK_HZ;
 
 	TIM2_PSC  = 0;
 	TIM2_ARR  = arr;
@@ -254,6 +263,9 @@ static void lcd_hw_init(void)
 	 * Only warm resets need it. A cold power-on brings the driver up unlatched,
 	 * so the flag check keeps normal boots instant and pays the 3s only on the
 	 * flash/update path, where it is free. */
+	/* Warm resets only. A radio unit that came up dark with every register correct looked like a
+	 * latched driver and briefly justified doing this on every boot — but the real fault was the
+	 * PWM frequency (see backlight_set), and a cold boot genuinely does start unlatched. */
 	if (!(RCC_CSR & RCC_CSR_PORRSTF)) {
 		pin_out(GPIO_PORT_C, 12, 0);
 		/* Feed while we wait. This runs in display init, i.e. BEFORE main and

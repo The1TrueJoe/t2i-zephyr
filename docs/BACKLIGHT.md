@@ -25,6 +25,22 @@ currently be removed (see §3).
 
 ---
 
+## SOLVED for radio units: drive the backlight at 2 kHz, not 30 kHz — 2026-08-18
+
+A radio unit ran our firmware with a **completely black LCD** while: PC12 high, keypad backlight
+**lit** (so the shared converter was up), PA1 in AF1, TIM2 running, panel answering `0x4747`. That
+is the §8 "registers correct, no light" signature, and it is NOT a latched driver.
+
+`backlight_set()` raised the PWM frequency with duty — up to `BL_MAX_HZ` = 30 kHz — to keep the ON
+pulse long. The bench unit lights fine at 30 kHz. **This unit lights at no duty at all at 30 kHz**,
+and lit instantly when PA1 was driven static high. §6 already recorded that stock drives **2 kHz**
+(`FUN_0801A9FA`); we simply were not doing it. Now fixed to a flat `BL_STOCK_HZ = 2000`, which also
+makes the duty-dependent frequency logic unnecessary — 1% at 2 kHz is still a 5 us pulse.
+
+**Diagnostic that cracked it:** the §10 split. Keypad backlight lit + LCD dark = converter up, so
+the fault is the LCD string or its drive — not the rail. Then static full-on proved the string was
+healthy, leaving only the dimming waveform.
+
 ## 2. The core problem
 
 **Update 2026-08-17: the latch is now clearable — drop PC12 for 3 s at boot, see
