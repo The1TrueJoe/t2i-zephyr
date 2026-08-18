@@ -203,6 +203,10 @@ error, no reply. Every symptom, from one extra byte.
 self-consistent, which is exactly why `ours -> ours` updates worked and hid the bug for so long.
 Both now read offset 2, matching stock.
 
+**Verified on hardware 2026-08-18:** with the corrected frame, an `ours -> ours` USB update still
+commits (`T2i fw offset2-B-via-usb` came back after an upload, having been SWD-flashed as
+`offset2-A`). The stock-to-ours case is the next test.
+
 The data frames were always correct: state 7 dispatches `FUN_0801F714(r4+1, 0x3f)` — 63 bytes at
 offset 1, length hardcoded in the firmware, which is what the uploader already sent.
 
