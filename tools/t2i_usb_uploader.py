@@ -9,7 +9,8 @@ which macOS exposes as the /dev/cu.usbmodem* serial port. There is NO separate
 
 Protocol (each frame = one 64-byte USB packet; byte0 = type):
   0x83 0x81 0x80                 -> init/handshake; device replies on IN with info
-  0x82 0x00 0x01 <declared u32LE> -> start download, declared size (bytes device sums)
+  0x82 0x00 <declared u32LE>      -> start download; byte1 is a SUBCOMMAND (0x00 = update),
+                                     declared is read from frame offset 2 (stock: ldr.w r0,[r4,#2])
   0x80 + 63 firmware bytes       -> data block (payload is chunked 63B/frame)
 The device stages the image to external SPI, then reboots and the bootloader
 commits it to internal flash (app region 0x08004000..0x0807FFFF).
@@ -113,7 +114,7 @@ def upload(dev, payload, declared):
             print("  -> no reply. If this is the running app it should still accept the data;"
                   " continuing.")
         # 2) start + declared size
-        write_all(fd, frame(0x82, bytes([0x00, 0x01]) + struct.pack("<I", declared)))
+        write_all(fd, frame(0x82, bytes([0x00]) + struct.pack("<I", declared)))
         read_for(fd, 0.3)
         # 3) data blocks
         n = len(payload) // DATA_PER_FRAME
@@ -174,7 +175,7 @@ def main():
             print(f"0x83 info reply: {len(info)}B")
             declared = a.size - 1
             print(f"sending 0x82 start, declared={declared} (0x{declared:08X})")
-            write_all(fd, frame(0x82, bytes([0x00, 0x01]) + struct.pack("<I", declared)))
+            write_all(fd, frame(0x82, bytes([0x00]) + struct.pack("<I", declared)))
             reply = read_for(fd, 3.0)
             print(f"0x82 reply: {len(reply)}B  {reply[:64].hex() or '(nothing)'}")
             if not reply:

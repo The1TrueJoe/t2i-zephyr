@@ -172,6 +172,40 @@ Also established: **stock sends no reply to `0x82`.** `--start-only` returned 0 
 and refused are indistinguishable from the host, and `FUN_0801F6D8`'s return value never reaches
 USB. The original uploader discarding that read was not the bug.
 
+## ROOT CAUSE — `declared` was written one byte too far into the frame
+
+**Fixed 2026-08-18.** The `0x82` start frame is:
+
+```
+byte 0 : 0x82          command
+byte 1 : subcommand    0x00 = firmware update  (0x80 and 0x82 are other operations)
+byte 2 : declared u32 LE
+```
+
+From the dispatcher at `0x0801720E`:
+
+```asm
+cmp   r0,#0x82          ; command
+ldrb  r0,[r4,#0x1]      ; subcommand
+bne   0x0801727e        ; != 0x80 -> update path
+cbnz  r0, ...           ; subcommand must be 0x00
+ldr.w r0,[r4,#0x2]      ; declared  <-- OFFSET 2, and it is an unaligned load
+bl    0x0801f6d8        ; start(declared)
+```
+
+`t2i_usb_uploader.py` sent `0x82 0x00 0x01 <u32>`, putting the size at **offset 3**. Stock read
+offsets 2-5, so for `declared = 507905` (`01 C0 07 00`) it saw `01 01 C0 07` =
+**0x07C00101 = 130,285,825**. It then waited for a 130 MB image. Our 508 KB never reached
+`declared`, the last-block branch in `FUN_0801F714` never ran, and it sat there — no commit, no
+error, no reply. Every symptom, from one extra byte.
+
+`src/updater.c` parsed offset 3 as well, because it was written to match the uploader. The two were
+self-consistent, which is exactly why `ours -> ours` updates worked and hid the bug for so long.
+Both now read offset 2, matching stock.
+
+The data frames were always correct: state 7 dispatches `FUN_0801F714(r4+1, 0x3f)` — 63 bytes at
+offset 1, length hardcoded in the firmware, which is what the uploader already sent.
+
 #### ETW capture of a real ID update — 2026-08-18
 
 `logman` + `tracerpt` with `Microsoft-Windows-USB-USBXHCI` (driver-free, works on ARM64 where

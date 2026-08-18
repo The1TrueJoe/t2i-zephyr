@@ -145,7 +145,11 @@ static void do_finalize(void)
 
 static void start(const uint8_t *f)
 {
-	declared = f[3] | (f[4] << 8) | (f[5] << 16) | ((uint32_t)f[6] << 24);
+	/* Offset 2, matching stock: the dispatcher does `ldrb r0,[r4,#1]` for the subcommand and
+	 * `ldr.w r0,[r4,#2]` for the size (0x08017212/0x08017280). We previously read from offset 3
+	 * to match an uploader that had an extra byte in the frame — self-consistent, and wrong
+	 * against every stock remote, which then waited for a 130 MB image that never arrived. */
+	declared = f[2] | (f[3] << 8) | (f[4] << 16) | ((uint32_t)f[5] << 24);
 	recv_cnt = 0; stage_addr = SPI_IMAGE_BASE; cksum = 0; page_len = 0; active = true;
 	DBG(1) = 0; DBG(2) = declared;
 	spi_unprotect();   /* clear power-on block protection so staging is erasable */
