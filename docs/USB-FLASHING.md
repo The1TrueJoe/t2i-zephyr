@@ -210,7 +210,26 @@ commits (`T2i fw offset2-B-via-usb` came back after an upload, having been SWD-f
 The data frames were always correct: state 7 dispatches `FUN_0801F714(r4+1, 0x3f)` — 63 bytes at
 offset 1, length hardcoded in the firmware, which is what the uploader already sent.
 
-### Remaining blocker: the macOS CDC transport drops mid-transfer
+### SOLVED: raw bulk instead of the CDC tty — verified stock -> ours 2026-08-18
+
+**A stock radio remote with no SWD now takes our firmware over USB.** Confirmed on
+`/dev/cu.usbmodem*`: banner `T2i fw STOCK-TO-OURS`, and the `0x83` info blob matches
+`updater.c`'s byte for byte (offsets 7/9 = `0x10 0x27`, against stock's `0x20 0x2b`).
+
+Two independent bugs had to be fixed:
+
+1. **`declared` at frame offset 2, not 3** (above). Without this stock waits for a 130 MB image.
+2. **Raw bulk transport.** The CDC tty cannot carry the transfer at all.
+
+`RawUsb` in `t2i_usb_uploader.py` claims interface 0 (CDC Data, class 0x0A) via libusb and writes
+64-byte frames to bulk EP `0x03`, reading `0x81`. 8062 frames in **5.8 s, zero drops** — against
+the tty, which failed at a random frame every single run. This is **cross-platform**, not a Windows
+workaround: libusb claims the interface fine on macOS, and the same code works on Linux and on
+Windows once the device is bound to WinUSB.
+
+`--cdc` keeps the old tty path for comparison. It cannot complete a stock update.
+
+### Why the CDC tty could not work (kept, because it cost hours)
 
 With `declared` fixed, stock finally *processes* our frames — and that exposed a second, unrelated
 problem. Somewhere between frame ~4000 and ~6300 (it varies run to run) macOS returns

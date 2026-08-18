@@ -52,7 +52,7 @@ void hx8347_backlight_state(uint32_t *out);
 /* Bumped by hand. On a USB-only remote there is otherwise no way to tell which
  * image is actually running, and "did the update commit?" is the single most
  * important question the update path has to answer. */
-#define FW_VERSION "STOCK-TO-OURS"
+#define FW_VERSION "dev"
 
 /* Set to 1 to reset before ever reaching safety_mark_healthy(), so the boot
  * counter climbs and safe mode engages. This is how the recovery path gets

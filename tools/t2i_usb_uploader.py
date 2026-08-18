@@ -32,6 +32,77 @@ Test on the SWD-connected unit first (SWD verifies the commit / un-bricks).
 """
 import os, sys, glob, struct, time, termios, select, signal, argparse
 
+
+VID, PID = 0x13BD, 0x1028
+
+
+class RawUsb:
+    """Raw bulk transport, the way Integration Designer talks to the remote.
+
+    The CDC tty path cannot carry this transfer: stock erases a 64 KB SPI sector mid-stream and
+    stalls ~1s, the host buffer fills, macOS returns ENXIO and the remote resets - at a random
+    frame, every time. libusb has no such buffer in the way, blocks properly on a busy device,
+    and behaves the same on macOS, Linux and Windows (where the device is bound to WinUSB), so
+    this is portable rather than a Windows-only escape hatch.
+
+    Interface 0 is CDC Data (class 0x0A) with bulk EP 0x03 OUT / 0x81 IN.
+    """
+
+    EP_OUT, EP_IN, IFACE = 0x03, 0x81, 0
+
+    def __init__(self):
+        import usb.core, usb.util, usb.backend.libusb1
+        self._util = usb.util
+        backend = None
+        for cand in ("/opt/homebrew/lib/libusb-1.0.dylib", "/usr/local/lib/libusb-1.0.dylib"):
+            if os.path.exists(cand):
+                backend = usb.backend.libusb1.get_backend(find_library=lambda x, c=cand: c)
+                break
+        self.dev = usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
+        if self.dev is None:
+            raise SystemExit("no %04x:%04x on USB" % (VID, PID))
+        try:
+            self.dev.set_configuration()
+        except Exception:
+            pass          # already configured, which is the normal case
+        usb.util.claim_interface(self.dev, self.IFACE)
+
+    def write(self, data, timeout=10000):
+        return self.dev.write(self.EP_OUT, data, timeout)
+
+    def read(self, n=4096, timeout=1500):
+        try:
+            return bytes(self.dev.read(self.EP_IN, n, timeout))
+        except Exception:
+            return b""
+
+    def close(self):
+        try:
+            self._util.release_interface(self.dev, self.IFACE)
+            self._util.dispose_resources(self.dev)
+        except Exception:
+            pass
+
+
+def upload_raw(payload, declared):
+    link = RawUsb()
+    try:
+        link.write(frame(0x83, bytes([0x81, 0x80])))
+        print("init reply (%dB)" % len(link.read()))
+        link.write(frame(0x82, bytes([0x00]) + struct.pack("<I", declared)))
+        link.read(timeout=300)
+        n = len(payload) // DATA_PER_FRAME
+        print("sending %d bytes in %d raw-bulk frames..." % (len(payload), n))
+        t0 = time.time()
+        for i in range(n):
+            link.write(frame(0x80, payload[i*DATA_PER_FRAME:(i+1)*DATA_PER_FRAME]))
+            if i % 1000 == 0:
+                print("  frame %d/%d" % (i, n), flush=True)
+        print("done in %.1fs" % (time.time() - t0))
+    finally:
+        link.close()
+
+
 END_MAGIC = bytes.fromhex("1234abcd")
 # Per-frame delay, measured from a real Integration Designer update captured over ETW:
 # 8064 frames in 16.0 s = 1.98 ms/frame. Going faster is not a speed win, it is a reset: at
@@ -158,20 +229,32 @@ def upload(dev, payload, declared):
         n = len(payload) // DATA_PER_FRAME
         print(f"sending {len(payload)} bytes in {n} data frames...")
         t0 = time.time()
+        # One contiguous byte stream, one position pointer.
+        #
+        # Resuming per-FRAME is not safe: os.write() can partially succeed before macOS raises
+        # ENXIO, so re-sending the whole frame duplicates whatever already went out and corrupts
+        # the running checksum the device is keeping — it then never finalizes, silently. Tracking
+        # a byte offset makes a reconnect exact no matter where it broke.
+        stream = b"".join(
+            frame(0x80, payload[k*DATA_PER_FRAME:(k+1)*DATA_PER_FRAME]) for k in range(n)
+        )
+        pos = 0
         reconnects = 0
-        i = 0
-        while i < n:
+        next_report = 0
+        while pos < len(stream):
             try:
-                write_all(fd, frame(0x80, payload[i*DATA_PER_FRAME:(i+1)*DATA_PER_FRAME]))
+                wrote = os.write(fd, stream[pos:pos + FRAME])
+                pos += wrote
+                if wrote:
+                    termios.tcdrain(fd)   # one frame in flight at most
+            except BlockingIOError:
+                select.select([], [fd], [], 1.0)
             except OSError as e:
-                # ENXIO here is the HOST's CDC endpoint giving up, not the remote dying: it still
-                # answers 0x83 afterwards. The device stays in its receive state, so reopening the
-                # port and continuing from the same frame resumes the transfer rather than
-                # restarting it. Without this the upload dies at a random frame every time.
-                if e.errno != 6 or reconnects >= 40:
+                if e.errno != 6 or reconnects >= 60:
                     raise
                 reconnects += 1
-                print(f"\n  CDC dropped at frame {i}/{n}; reopening ({reconnects})...", flush=True)
+                print(f"\n  CDC dropped at byte {pos}/{len(stream)} "
+                      f"(frame {pos // FRAME}); reopening ({reconnects})...", flush=True)
                 try:
                     os.close(fd)
                 except OSError:
@@ -180,27 +263,15 @@ def upload(dev, payload, declared):
                 for _ in range(60):
                     try:
                         fd = open_serial(find_port(None))
-                        os.set_blocking(fd, False)
+                        os.set_blocking(fd, True)
                         break
                     except (SystemExit, OSError):
                         time.sleep(1.0)
                 else:
                     raise
-                continue
-            i += 1
-            # Pace to roughly what the device can absorb. Without this we outrun its SPI writes
-            # and overflow the host-side buffer long before the transfer ends.
-            if PACE_S:
-                time.sleep(PACE_S)
-            # About to cross a 64 KB sector boundary: give the device time to erase it.
-            a0 = SPI_STAGE_BASE + i * DATA_PER_FRAME
-            if (a0 >> 16) != ((a0 + DATA_PER_FRAME) >> 16):
-                print(f"  ... 64K boundary at 0x{a0 + DATA_PER_FRAME:08X}, pausing for erase",
-                      flush=True)
-                time.sleep(ERASE_PAUSE_S)
-            if i % 1000 == 0:
-                read_for(fd, 0.0)  # drain any acks
-                print(f"  frame {i}/{n}", flush=True)
+            if pos >= next_report:
+                print(f"  frame {pos // FRAME}/{n}", flush=True)
+                next_report += 1000 * FRAME
         print(f"done in {time.time()-t0:.1f}s. Draining final reply...")
         print("final reply:", read_for(fd, 2.0)[:48].hex())
         print("Device should now stage->finalize->reset->commit. VERIFY over SWD.")
@@ -223,6 +294,9 @@ def main():
                         "that answer away — this is how you see it. It still erases the first "
                         "sector, so it is not a safe probe; see docs/USB-FLASHING.md.")
     ap.add_argument("--dev", help="serial device (default: first /dev/cu.usbmodem*)")
+    ap.add_argument("--cdc", action="store_true",
+                    help="use the old CDC tty transport instead of raw bulk. Kept for comparison; "
+                         "it cannot complete a stock update (see docs/USB-FLASHING.md).")
     ap.add_argument("--size", type=lambda x: int(x, 0), default=507906,
                     help="total payload size (default 507906 = 8062*63, from capture)")
     a = ap.parse_args()
@@ -265,7 +339,10 @@ def main():
         upload(dev, payload, len(payload) - 1)
     else:
         fw = open(a.image, "rb").read()
-        upload(dev, build_payload(fw, a.size), a.size - 1)
+        if a.cdc:
+            upload(dev, build_payload(fw, a.size), a.size - 1)
+        else:
+            upload_raw(build_payload(fw, a.size), a.size - 1)
 
 if __name__ == "__main__":
     main()
