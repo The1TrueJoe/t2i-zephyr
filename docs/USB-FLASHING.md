@@ -23,6 +23,56 @@ python3 -c "import serial;s=serial.Serial('/dev/cu.usbmodem1101',115200,timeout=
 Bump `FW_VERSION` in [src/main.c](../src/main.c) before any update you intend to
 verify. An unchanged stamp after an update means the commit did **not** happen.
 
+## STOCK -> ours over USB does NOT work — measured 2026-08-18
+
+Everything above was verified **ours -> ours**: a remote already running our firmware, updated by
+our own `updater.c`. Going from **stock RTI** to ours over USB is a different path, and on the
+radio unit (`MstrBdrm ID 40`) it **does not commit**.
+
+What was tried, on a unit with no SWD:
+
+1. Uploaded our image. All 8062 frames accepted, device reset. Stock still running.
+2. Repeated with `KEY HELD`, watchdog and nRESET fixes. Same.
+3. Replayed a **known-good stock image** (`recovered_T2i_1x_fw_from_usb.bin`, 507906 bytes, the
+   capture the uploader was reverse-engineered from). **Also did not commit.**
+
+So the transport is fine and the device commits *nothing* — not our image, not even a stock one.
+The finalize trigger in our own implementation is `recv_cnt == declared && cksum == 0`, and the
+uploader satisfies both by construction, so stock's app is either not reaching its own finalize or
+its bootloader is rejecting the staged image for a reason not visible without SWD.
+
+### How to tell which firmware is actually running
+
+Do **not** use the device name. Our `updater.c` answers `0x83` with a **192-byte info blob copied
+verbatim from stock**, so "Remote Technologies" proves nothing, and the name reads `Unknown` for
+both our firmware and a stock unit whose config has been erased. That ambiguity cost a wrong
+conclusion here. Compare the reply against `info_reply[]` byte for byte instead:
+
+```bash
+python3 -c "
+import re,glob,serial,time
+ours=bytes(int(x,16) for x in re.findall(r'0x([0-9a-fA-F]{2})',
+    re.search(r'info_reply\[192\]\s*=\s*\{(.*?)\};', open('src/updater.c').read(), re.S).group(1)))
+s=serial.Serial(sorted(glob.glob('/dev/cu.usbmodem*'))[0],115200,timeout=2)
+s.write(bytes([0x83,0x81,0x80]+[0]*61)); time.sleep(2)
+print('ours:', s.read(4096)[:192]==ours)"
+```
+
+Offsets 7 and 9 are the tell: stock reports `0x42`/`0x3c`, our captured blob has `0x10`/`0x27`.
+
+### Consequence for deployment
+
+**A radio remote needs SWD once to bootstrap.** The SWD unit only accepts USB updates because it
+was first flashed over SWD; USB-only updating works from our firmware onward, not from stock.
+Until the stock-side commit is understood, a unit with no SWD cannot be converted.
+
+### Cost incurred
+
+The first upload erased the SPI staging window (`0x01F80000`-`0x02000000`), which on this unit held
+RTI's configuration: the handshake name went from `MstrBdrm ID 40` to `Unknown` and did not come
+back. The unit still runs stock and still enumerates, but its Integration Designer programming is
+gone and would need re-pushing from the `.rti` project.
+
 ## What stops a bad image from bricking a remote
 
 The RTI bootloader has **no USB of its own** (verified: sector 0 touches only

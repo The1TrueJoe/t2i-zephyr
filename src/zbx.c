@@ -242,6 +242,23 @@ void zbx_uart_init(void)
 	USART3_BRR = ZBX_BRR;
 	USART3_CR1 = (1u << 13) | (1u << 3) | (1u << 2);   /* UE | TE | RE, 8N1 */
 	memset(&rx_state, 0, sizeof rx_state);
+
+	/* Release the radio from reset.
+	 *
+	 * PC13 is the EM250's nRESET, active low (docs/ZIGBEE-PROTOCOL.md; stock pulses it low for
+	 * ~1.4ms in FUN_0800bfb2). After an MCU reset this pin is an input, so nothing is driving
+	 * it — the radio is left wherever it happened to be, which for a first attempt at talking to
+	 * it is indistinguishable from a dead link. Drive it explicitly, always. */
+	GPIO_MODER(GPIO_PORT_C) = (GPIO_MODER(GPIO_PORT_C) & ~(3u << (13 * 2)))
+				  | (GPIO_MODE_OUTPUT << (13 * 2));
+	GPIO_BSRR(GPIO_PORT_C) = 1u << (13 + 16);   /* nRESET low */
+	k_msleep(5);                                /* stock uses ~1.4ms; longer is free */
+	GPIO_BSRR(GPIO_PORT_C) = 1u << 13;          /* release */
+
+	/* The EM250 has to boot its own stack before it can answer. Stock never talks to it this
+	 * early, so this delay is ours and is a guess worth revisiting if the link stays quiet. */
+	k_msleep(500);
+	memset(&rx_state, 0, sizeof rx_state);
 }
 
 static void tx_byte(uint8_t b)

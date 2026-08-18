@@ -52,7 +52,7 @@ void hx8347_backlight_state(uint32_t *out);
 /* Bumped by hand. On a USB-only remote there is otherwise no way to tell which
  * image is actually running, and "did the update commit?" is the single most
  * important question the update path has to answer. */
-#define FW_VERSION "dev"
+#define FW_VERSION "radio-4"
 
 /* Set to 1 to reset before ever reaching safety_mark_healthy(), so the boot
  * counter climbs and safe mode engages. This is how the recovery path gets
@@ -93,6 +93,9 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 /* EMA shift: the average trails by roughly 2^ALS_SMOOTH samples of the 10ms loop, so ~0.6s. */
 #define ALS_SMOOTH 6
 
+/* How often to report the radio link over USB. */
+#define ZBX_REPORT_MS 10000
+
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
 
@@ -116,9 +119,49 @@ static void safe_mode(void)
 	 * self-recovering behaviour we want. */
 	safety_mark_healthy();
 
+	/* Say so, repeatedly. A one-shot line at boot is unobservable on a USB-only unit: the CDC
+	 * port stalls ~25s on first open, so by the time a host is listening the boot is long past.
+	 * Silence and a working port look identical, which is exactly the confusion this cost. */
+	int64_t said = 0;
+
 	while (1) {
 		safety_watchdog_feed();
+		if (k_uptime_get() - said >= 2000) {
+			said = k_uptime_get();
+			updater_emit("SAFE MODE — USB only, previous boots failed");
+		}
 		k_msleep(100);
+	}
+}
+
+/* Dump anything the EM250 says, as hex, over USB CDC.
+ *
+ * The radio has never been talked to: src/zbx.c passes its own codec self-test but has never met
+ * an EM250. Everything here is READ-ONLY by choice — 0x60 and 0x62 take no payload and the 0x6x
+ * family is strictly paired (reply opcode = request + 1), so a reply proves the link end to end.
+ * The network-shaped opcodes (0x20/0x21/0x26 config, 0x30-0x32, 0x40 send) are deliberately not
+ * sent: this remote is joined to a live RTI system and a probe must not change that. */
+static void zbx_report(const uint8_t *p, size_t n, const char *tag)
+{
+	char line[96];
+	int w = snprintf(line, sizeof(line), "ZBX %s", tag);
+
+	for (size_t i = 0; i < n && w < (int)sizeof(line) - 4; i++) {
+		w += snprintf(line + w, sizeof(line) - (size_t)w, " %02x", p[i]);
+	}
+	updater_emit(line);
+}
+
+/* Drain the radio and report whatever arrives. The EM250 sends unsolicited indications —
+ * 0x07 stack status (0x90 = joined), 0x05 network info — so this is worth running even if
+ * nothing is ever transmitted. */
+static void zbx_pump(void)
+{
+	const uint8_t *frame;
+	size_t n = zbx_poll(&frame);
+
+	if (n) {
+		zbx_report(frame, n, "rx");
 	}
 }
 
@@ -170,6 +213,7 @@ int main(void)
 	}
 
 	ui_init(disp, SPLASH_MS);
+	safety_watchdog_feed();
 	MARK(0x00, 2);
 
 	touch_init();
@@ -189,13 +233,19 @@ int main(void)
 	 * labelled — the name printed over USB is the channel that is lit. */
 	static const char *const fl_ch[3] = { "red", "green", "blue" };
 
+	/* Feed across every one of these. They run AFTER safety_watchdog_start(), and together with
+	 * the splash they very nearly exhaust the 8s IWDG period on their own — adding a blocking
+	 * radio probe here once pushed boot past it, which reset-looped the remote into safe mode.
+	 * On a unit with no SWD that is only recoverable because safe mode keeps USB up. */
 	for (int c = 0; c < 3; c++) {
 		funlight_set(c == 0, c == 1, c == 2, 100);
 		updater_emit(fl_ch[c]);
+		safety_watchdog_feed();
 		k_msleep(500);
 	}
 	funlight_set(true, true, true, 100);
 	updater_emit("all three");
+	safety_watchdog_feed();
 	k_msleep(500);
 
 	{
@@ -205,7 +255,9 @@ int main(void)
 		/* Radio init goes here — in main, after updater_init(). NEVER in a
 		 * driver-init hook: anything failing before USB is up cannot be
 		 * recovered on a remote without SWD (docs/USB-FLASHING.md). */
+		safety_watchdog_feed();
 		zbx_uart_init();
+		safety_watchdog_feed();
 		updater_emit(zbx_selftest() ? "ZBX selftest PASS" : "ZBX selftest FAIL");
 		snprintf(idb, sizeof(idb), "PANEL id=0x%04x", hx8347_panel_id());
 		updater_emit(idb);
@@ -245,6 +297,7 @@ int main(void)
 	int als_step = -1, als_pending = -1;
 	int64_t als_since = 0;
 	int32_t als_acc = -1;   /* EMA accumulator, value << ALS_SMOOTH */
+	int64_t zbx_last_report = 0;
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -257,6 +310,27 @@ int main(void)
 			safety_mark_healthy();
 			healthy = true;
 			st.healthy = true;
+		}
+
+		zbx_pump();
+
+		/* Report the radio periodically, not just at boot. The CDC port stalls ~25s on first
+		 * open, so a one-shot boot banner is unobservable on a unit with no SWD — by the time
+		 * a host is listening it is long gone. */
+		if (k_uptime_get() - zbx_last_report >= ZBX_REPORT_MS) {
+			uint32_t f, bad, by;
+			char line[72];
+
+			zbx_last_report = k_uptime_get();
+			zbx_stats(&f, &bad, &by);
+			snprintf(line, sizeof(line), "ZBX frames=%u bad=%u bytes=%u", f, bad, by);
+			updater_emit(line);
+
+			/* Re-probe: 0x60 takes no payload and its reply is 0x61, so a single answer
+			 * proves the link. Read-only — nothing here can change the network. */
+			static const uint8_t q60[] = { 0x60, 0x00 };
+
+			zbx_send(q60, sizeof q60);
 		}
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
