@@ -34,6 +34,7 @@
 #include "zbx.h"
 
 uint16_t hx8347_panel_id(void);
+int hx8347_backlight_pct(void);
 void hx8347_backlight_state(uint32_t *out);
 #include "wake.h"
 #include "lowpower.h"
@@ -87,7 +88,10 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
  * walking between it and a lamp, must not step the screen. Slow is also what stops a feedback
  * loop if the panel's own backlight reaches the sensor -- a fast loop there would ramp itself
  * to full. */
-#define ALS_HOLD_MS 4000
+#define ALS_HOLD_MS 2500
+
+/* EMA shift: the average trails by roughly 2^ALS_SMOOTH samples of the 10ms loop, so ~0.6s. */
+#define ALS_SMOOTH 6
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
@@ -240,6 +244,7 @@ int main(void)
 	int64_t led_since = 0;
 	int als_step = -1, als_pending = -1;
 	int64_t als_since = 0;
+	int32_t als_acc = -1;   /* EMA accumulator, value << ALS_SMOOTH */
 	int64_t debug_held_since = 0;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
@@ -356,14 +361,27 @@ int main(void)
 		st.batt_raw = battery_raw();
 		st.batt_low = battery_low();
 		st.als = als_raw();
+
+		/* Smooth before deciding anything. The raw reading jitters by several counts, and the
+		 * whole indoor range is only a couple of dozen counts wide — so raw samples cross a
+		 * threshold constantly, which reset the hold timer below on almost every pass and meant
+		 * the backlight never actually moved. */
+		if (st.als >= 0) {
+			if (als_acc < 0) {
+				als_acc = st.als << ALS_SMOOTH;   /* seed, so boot does not ramp from 0 */
+			}
+			als_acc += st.als - (als_acc >> ALS_SMOOTH);
+			st.als_avg = als_acc >> ALS_SMOOTH;
+		}
+		st.backlight = hx8347_backlight_pct();
 		st.charger = battery_charger_present();
 		st.charge_state = battery_charge_state();
 
 		/* Auto-brightness. Only written on an actual change: every write reprograms TIM2. */
-		if (AUTO_BRIGHTNESS && st.als >= 0) {
+		if (AUTO_BRIGHTNESS && als_acc >= 0) {
 			int step = 0;
 
-			while (ALS_STEPS[step].above >= 0 && st.als <= ALS_STEPS[step].above) {
+			while (ALS_STEPS[step].above >= 0 && st.als_avg <= ALS_STEPS[step].above) {
 				step++;
 			}
 			if (step != als_pending) {

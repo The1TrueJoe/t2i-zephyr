@@ -29,6 +29,8 @@ struct t2i_status {
 	int      batt_raw;                       /* 12-bit counts, -1 = no reading */
 	bool     batt_low;
 	int      als;                            /* ambient light, raw 12-bit; -1 = no reading */
+	int      als_avg;                        /* smoothed ambient light, what drives brightness */
+	int      backlight;                      /* LCD backlight, percent */
 	bool     charger;
 	uint8_t  charge_state;
 

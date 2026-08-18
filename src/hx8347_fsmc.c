@@ -139,9 +139,16 @@ static void panel_init(void)
  * which is why "off" previously became "off permanently". Stock disables the
  * timer at both endpoints and rebuilds the PWM on the way out, so we do too.
  */
+static int bl_pct = -1;
+
+/* What the LCD backlight is actually set to. Reported rather than tracked by the caller so the
+ * debug screen cannot drift from the hardware. */
+int hx8347_backlight_pct(void) { return bl_pct; }
+
 static void backlight_set(int pct)
 {
 	if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+	bl_pct = pct;
 	RCC_APB1ENR |= (1u << 0);                /* TIM2EN */
 
 	if (pct == 0 || pct == 100) {
