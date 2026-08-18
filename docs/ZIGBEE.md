@@ -443,3 +443,70 @@ blocker as before, now confirmed rather than assumed.
 
 Worth knowing before that: EM35x parts have a serial bootloader, and the reset line is under our
 control (above), which is normally how you enter it.
+
+### The CA-1's EM357 is running a factory test image — 2026-08-18
+
+The radio is fine and its bootloader is reachable. Two things had to be right at once, and the
+OpenHC recon notes had already hit the same wall by getting one of them wrong:
+
+* **`zigbee_reset` is active-HIGH = RELEASED.** The DT hog says `output-high; /* reset released */`.
+  Driving it low *asserts* reset. An earlier probe here listened while holding the chip down.
+* **No RTS/CTS for the bootloader.** With `crtscts` it is silent; with `-crtscts` it answers.
+
+```sh
+devmem 0x0209C000 32 0x00030400   # pulse LOW  = assert reset
+devmem 0x0209C000 32 0x00030500   # back HIGH  = release  (booted state)
+stty -F /dev/ttymxc4 115200 raw -echo -crtscts
+printf "\r\n" > /dev/ttymxc4
+```
+
+```
+EM357 Serial Bootloader v4.7.2.0 b88
+1. upload ebl
+2. run
+3. ebl info
+BL >
+```
+
+That is the same Ember bootloader interface as the EM250 (`BL >`, option 1, XMODEM-CRC) already
+reversed in [EM250-REFLASH.md](EM250-REFLASH.md). So the part **is** an EM357 — previously
+"unconfirmed" in the OpenHC recon.
+
+`3` (ebl info) reports `UUT_V3t`, and `2` (run) boots:
+
+```
+Control4 MFG UUT Radio, 920-00017 R2015-03-03-0t
+EUI: 000FFF0000622978
+[READY]
+mfgtest-uut>
+```
+
+**A manufacturing test image, not an NCP.** That is why no EZSP/ASH probe has ever worked on this
+unit — nothing was broken, the radio simply has factory firmware. The `000FFF...` EUI is a test
+placeholder.
+
+### Flashing the real NCP
+
+The stock image is on the device itself, in Control4's recovery filesystem — no redistribution
+needed, which is what `openHC/docs/hardware-interfaces.md` prefers:
+
+```sh
+mount -o ro /dev/mmcblk1p3 /mnt/c4
+xzcat /mnt/c4/recfs.tar.xz | tar -x ./control4/firmware/pro/em357-uart-rts-cts-use-with-serial-uart-bootloader_4720.ebl
+```
+
+105,344 bytes, header `ZNCPVer:4720`, md5 `c24b1e132ef85555e35cf7f55d48cf52` — matching the size
+the OpenHC docs recorded.
+
+The box has no `sz`/`lsz`/`python`, so the transfer is [tools/em357_xmodem.js](../tools/em357_xmodem.js)
+(node, XMODEM-CRC). Copy it to the CA-1 and:
+
+```sh
+stty -F /dev/ttymxc4 115200 raw -echo -crtscts min 0 time 3
+node /tmp/xmodem.js /tmp/ncp/control4/firmware/pro/em357-uart-rts-cts-use-with-serial-uart-bootloader_4720.ebl
+```
+
+The bootloader lives in a protected region and option `1` does not touch it, so a failed transfer
+is retryable — the radio cannot be lost this way.
+
+Afterwards `2` (run) should give `RSTACK` (`1a c1 02 ...`), and then `zigbee-ap` can drive it.
