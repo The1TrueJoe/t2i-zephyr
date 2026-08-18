@@ -401,3 +401,45 @@ the application deciding to re-roam, not a protocol command.
 ## 3. The three candidate paths
 
 _(this section is completed below, after the external research)_
+
+---
+
+## The OpenHC CA-1 as a receiver — investigated 2026-08-18
+
+`ssh root@192.168.1.178`. **Control4 CA-1 (i.MX6SL)**, Linux 7.1.8 armv7l, busybox userland with
+`node v20.15.1` (so `zigbee-ap` could run on the box itself), `stty`, `od`, `devmem`, `gpioinfo`.
+No working `python`.
+
+**The EM357 is held in reset by OpenHC.** The device tree defines a GPIO hog:
+
+```
+/proc/device-tree/soc/bus@2000000/gpio@209c000/zigbee-reset-hog
+gpio-8  (zigbee_reset |?) out hi      # gpiochip0 line 8, active-high
+gpio-16 (zwave_reset  |?) out hi      # the Z-Wave radio too
+```
+
+Released at runtime without touching the DT — GPIO1_DR is at `0x0209C000`, line 8 is bit 8:
+
+```sh
+devmem 0x0209C000 32 0x00030400   # release (booted value is 0x00030500)
+devmem 0x0209C000 32 0x00030500   # restore
+```
+
+**It still says nothing.** Swept `/dev/ttymxc1..4` at 115200/57600/38400/19200/9600, listening
+across a reset release and sending an ASH `RST` (`1A C0 38 BC 7E`) — no reply on any combination.
+A reply containing `C1` would have been `RSTACK`, i.e. EZSP.
+
+What the device tree says about the hardware:
+
+* all five UARTs `status=okay` with pinctrl applied, so nothing is un-muxed
+* of four SPI controllers only `spi@200c000` is enabled, and its only child is a `s25fl128s` NOR
+  flash — **no radio on SPI**
+* the Zigbee radio is not described anywhere in the DT; only its reset line is
+
+**Reading:** the EM357 is running Control4's own application, not an EmberZNet NCP. It does not
+answer ASH, and OpenHC never brings it up — the hog holds it in reset from boot. So the CA-1 cannot
+receive for us as-is: the EM357 needs an EZSP NCP image flashed into it first, which is the same
+blocker as before, now confirmed rather than assumed.
+
+Worth knowing before that: EM35x parts have a serial bootloader, and the reset line is under our
+control (above), which is normally how you enter it.
