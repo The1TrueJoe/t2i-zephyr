@@ -31,6 +31,7 @@
 #include "battery.h"
 #include "funlight.h"
 #include "ir.h"
+#include "em250.h"
 #include "zbx.h"
 
 uint16_t hx8347_panel_id(void);
@@ -96,6 +97,9 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 /* How often to report the radio link over USB. */
 #define ZBX_REPORT_MS 10000
 #define ZBX_PROBE 0
+
+/* Reflash the EM250 with RTI's ZB-Pro coordinator image, once, on the first pass after boot. */
+#define EM250_FLASH 1
 
 /* Synthetic key events, so the firmware -> USB -> bridge -> CA-1 path can be proven end to end
  * with nobody holding the remote. Real presses still report normally alongside these. */
@@ -173,6 +177,19 @@ static void zbx_pump(void)
 
 /* Printable-only dump, for the bootloader's banner and menu — emit_hex truncates too early
  * to show which option uploads an image. */
+/* Upload progress. Called every 8 blocks, mostly so the watchdog gets fed — the transfer runs far
+ * longer than its ~8 s window. The emit is throttled separately so the log stays readable. */
+static void flash_progress(unsigned done, unsigned total)
+{
+	char line[64];
+
+	safety_watchdog_feed();
+	if ((done % 64u) == 0u || done == total) {
+		snprintf(line, sizeof line, "EM250: %u/%u blocks", done, total);
+		updater_emit(line);
+	}
+}
+
 static void emit_ascii(const char *tag, const uint8_t *b, size_t n)
 {
 	char line[200];
@@ -209,49 +226,6 @@ static void emit_hex(const char *tag, const uint8_t *b, size_t n)
 	updater_emit(line);
 }
 
-/* Enter the EM250's standalone bootloader and PROVE we are in it.
- *
- * 0x08 launches it, but entry is timing-sensitive: bare CR or short waits silently do nothing,
- * and a sweep run against a radio that never entered looks exactly like a sweep that found
- * nothing. So verify the banner and retry rather than assume. */
-static bool bl_enter(void)
-{
-	static const uint8_t c02[] = { 0x02, 0x00 };
-	static const uint8_t c08[] = { 0x08, 0x00 };
-	static const uint8_t crlf[] = { '\r', '\n' };
-	uint8_t raw[192];
-
-	for (int attempt = 0; attempt < 4; attempt++) {
-		size_t n;
-
-		zbx_send(c02, sizeof c02);
-		for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
-		safety_watchdog_feed();
-
-		zbx_raw_reset();
-		zbx_send(c08, sizeof c08);
-		for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
-		safety_watchdog_feed();
-
-		for (int round = 0; round < 4; round++) {
-			zbx_raw_reset();
-			zbx_tx_raw(crlf, sizeof crlf);
-			for (int w = 0; w < 20; w++) { zbx_pump(); k_msleep(50); }
-			n = zbx_raw(raw, sizeof raw);
-			safety_watchdog_feed();
-
-			for (size_t i = 0; i + 5 <= n; i++) {
-				if (memcmp(&raw[i], "EM250", 5) == 0) {
-					return true;
-				}
-			}
-		}
-		zbx_uart_init();          /* PC13 reset and try again */
-		k_msleep(500);
-		safety_watchdog_feed();
-	}
-	return false;
-}
 
 int main(void)
 {
@@ -392,6 +366,7 @@ int main(void)
 	};
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
+	static bool flashed;
 	int64_t sim_at = 0;
 	unsigned sim_i = 0, sim_phase = 0;
 	int last_led = -1, led_pending = -1;
@@ -447,59 +422,53 @@ int main(void)
 			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
 			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
 			 * RX), not the radio, and no amount of framing work would ever have helped. */
-			/* Is 0x50/0x51/0x52 Ember's mfglib? The shape matches exactly —
-			 * start / set-something / end — and mfglib can transmit raw 802.15.4
-			 * with NO network, which would make the whole key problem irrelevant:
-			 * the remote could send button presses as raw frames for the CA-1 to
-			 * sniff. Long dwells so the sniffer has time to land on the channel. */
-			static unsigned mpass;
+			/* Reflash the radio, once.
+			 *
+			 * RTI's TXBZB app cannot join any network we can build: it demands the
+			 * network key APS-encrypted and holds no preconfigured key to decrypt
+			 * it with, and neither end can be talked out of that. The EM250 is a
+			 * XAP2b SoC with no obtainable toolchain, and an "EM250 NCP image" does
+			 * not exist (EZSP is an EM260/SN260 protocol) — so RTI's own ZB-Pro
+			 * coordinator build is the only radio firmware we will ever have.
+			 *
+			 * Cannot brick it: the image's 97 records write only 0x02800-0x19BC8,
+			 * 0x1C000-0x1CAAE and 0x1DF32-0x1DFFC, so the bootloader's reserved
+			 * 0x0000-0x27FF is never touched, and a failed upload merely leaves the
+			 * app invalid — which keeps the bootloader resident. Not undoable: no
+			 * copy of TXBZB exists and the radio has no read-out path. */
+			if (EM250_FLASH && !flashed) {
+				char info[64];
 
-			if (ZBX_PROBE) {
-				static const uint8_t c02[] = { 0x02, 0x00 };
-				static const uint8_t steps[][8] = {
-					{ 0x50, 0x00 },                              /* start */
-					{ 0x51, 0x03, 0x0F, 0x00, 0x00 },            /* arg = 15 first  */
-					{ 0x51, 0x03, 0x00, 0x00, 0x0F },            /* arg = 15 last   */
-					{ 0x51, 0x03, 0x00, 0x0F, 0x00 },            /* arg = 15 middle */
-					{ 0x40, 0x04, 0xFF, 0xAA, 0x55, 0xF0 },      /* try a raw send  */
-					{ 0x52, 0x00 },                              /* end */
-				};
-				static const uint8_t slen[] = { 2, 5, 5, 5, 6, 2 };
-				static const char *what[] = {
-					"0x50 start", "0x51 ch-first", "0x51 ch-last",
-					"0x51 ch-mid", "0x40 raw send", "0x52 end",
-				};
-				const unsigned k = mpass++ % 6;
-				const uint8_t *pl;
-				size_t n;
-				bool got = false;
+				flashed = true;
+				updater_emit("EM250: entering bootloader");
+				if (!em250_bl_enter()) {
+					updater_emit("EM250: entry FAILED - radio untouched");
+				} else {
+					bool ok;
 
-				if (mpass == 1) {
-					zbx_send(c02, sizeof c02);
-					for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
+					em250_bl_info(info, sizeof info);
+					snprintf(line, sizeof(line), "EM250: before = %s", info);
+					updater_emit(line);
+
+					snprintf(line, sizeof(line), "EM250: uploading %u bytes",
+						 (unsigned)zbpro_ebl_len);
+					updater_emit(line);
+
+					ok = em250_flash_ebl(zbpro_ebl, zbpro_ebl_len, flash_progress);
+					updater_emit(ok ? "EM250: upload OK" : "EM250: upload FAILED");
+					safety_watchdog_feed();
+
+					if (!em250_bl_enter()) {
+						updater_emit("EM250: re-entry failed; resetting radio");
+						zbx_uart_init();
+					} else {
+						em250_bl_info(info, sizeof info);
+						snprintf(line, sizeof(line), "EM250: after  = %s", info);
+						updater_emit(line);
+						em250_bl_run();
+					}
 					safety_watchdog_feed();
 				}
-
-				snprintf(line, sizeof(line), "MFG %s", what[k]);
-				updater_emit(line);
-				while (zbx_poll(&pl)) { }
-				zbx_send(steps[k], slen[k]);
-
-				for (int w = 0; w < 240; w++) {          /* ~12 s dwell */
-					k_msleep(50);
-					while ((n = zbx_poll(&pl)) != 0) {
-						if (n >= 4 && pl[0] == 0x01 && !got) {
-							snprintf(line, sizeof(line), "  reply op=%02x st=%02x",
-								 pl[2], pl[3]);
-							updater_emit(line);
-							got = true;
-						}
-					}
-					if ((w % 40) == 0) {
-						safety_watchdog_feed();
-					}
-				}
-				safety_watchdog_feed();
 			}
 
 			/* Display state, repeated rather than printed once at boot: the boot banner is
