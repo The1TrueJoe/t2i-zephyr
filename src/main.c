@@ -358,40 +358,40 @@ int main(void)
 			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
 			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
 			 * RX), not the radio, and no amount of framing work would ever have helped. */
+			/* ZigBee bring-up, once. 0x20 is ROUTER init ("ZbxRx router init cmd
+			 * resp") and this handheld's EM250 runs an end-device image, so it is
+			 * refused with status 0x01 whatever the arguments — which is what
+			 * argument-free 0x30 being refused identically was telling us all
+			 * along. 0x21 is the end-device init (FUN_080207c0: pan_lo,
+			 * epan[0..7], mode, cfg) and it answers status 0x00.
+			 *
+			 * Open the link once, then re-issue 0x21 every pass: a join scan that
+			 * finds nothing drops back to idle, so retrying is what keeps a scan in
+			 * flight for a sniffer parked on one channel to catch. */
+			static bool zbx_brought_up;
+
 			if (ZBX_PROBE) {
-				/* Stock's ordering, from FUN_08019234 and FUN_080194F4:
-				 *
-				 *   state 1 (opened) -> send 0x04, 10s timer, state 2
-				 *   state 2          -> evaluate the 0x05 network info
-				 *   state 3          -> send 0x20/0x21/0x26 via FUN_08019E40
-				 *   0x20 refused     -> send 0x32, wait 1s, retry   <- stock's own remedy
-				 *
-				 * Firing one-shot 0x20s at a radio that was never walked through this is
-				 * why every one came back status 0x01. pan_lo is 0x35 rather than 0 —
-				 * PAN id 0 is not valid, and byte 10 carries only the low half of the
-				 * PAN (a truncation the decomp already flagged).
-				 */
-				static const uint8_t c32[] = { 0x32, 0x00 };
+				static const uint8_t c02[] = { 0x02, 0x00 };
 				static const uint8_t c04[] = { 0x04, 0x00 };
-				static const uint8_t c20[] = {
-					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
-					0x35, 0x02, 0x07,0xFF,0xF8,0x00 };
+				static const uint8_t c21[] = {
+					0x21, 0x0B, 0x35,
+					0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
+					0x02, 0x00 };
 				static const struct { const uint8_t *p; uint8_t n; const char *what; } seq[] = {
-					{ c32, sizeof c32, "0x32 leave/reset" },
+					{ c02, sizeof c02, "0x02 open" },
 					{ c04, sizeof c04, "0x04 query network" },
-					{ c20, sizeof c20, "0x20 router init, pan 0x35, mode 2" },
+					{ c21, sizeof c21, "0x21 end-device init mode=2 cfg=0" },
 				};
 
-				for (unsigned k = 0; k < sizeof(seq) / sizeof(seq[0]); k++) {
+				for (unsigned k = zbx_brought_up ? 2 : 0;
+				     k < sizeof(seq) / sizeof(seq[0]); k++) {
 					snprintf(line, sizeof(line), "ZBX seq %u: %s", k + 1, seq[k].what);
 					updater_emit(line);
 					zbx_send(seq[k].p, seq[k].n);
-					for (int w = 0; w < 40; w++) {
-						zbx_pump();
-						k_msleep(50);
-					}
+					for (int w = 0; w < 40; w++) { zbx_pump(); k_msleep(50); }
 					safety_watchdog_feed();
 				}
+				zbx_brought_up = true;
 			}
 
 			/* Display state, repeated rather than printed once at boot: the boot banner is

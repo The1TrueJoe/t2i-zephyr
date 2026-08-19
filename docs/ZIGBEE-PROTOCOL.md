@@ -60,14 +60,65 @@ The full elimination, all measured on hardware:
 Never varies, including for `0x30`, which takes no arguments at all. So it is not the arguments and
 not the ordering.
 
-**Leading hypothesis: missing security material.** A ZigBee stack will not form or join without a
-network key, and opcodes `0x22`, `0x23`, `0x24` all carry **8-byte payloads** and have **no encoder
-in this build** (`FUN_080206F6` gives them length 8; the encoder table has `(none)`). Eight bytes is
-not a key, but it is the right size for a key *fragment* or an EUI/key-id — and their absence from
-this firmware's encoders suggests the pairing path that uses them lives in a build we have not
-looked at, or is driven from config. `0x74`/`0x75` are the same shape. That is where to look next,
-along with `zbx+0x24`/`zbx+0x25` (the two config bytes `FUN_08019198` copies in and
-`FUN_08019E40` passes as `param_4`/`cfg`).
+**RESOLVED — it is an end-device image, and `0x20` is ROUTER init.**
+
+The security-material hypothesis was wrong. The clue was in the log string all along:
+`ZbxRx **router** init cmd resp`. This is a battery-powered handheld, so its EM250 runs an
+end-device image, and an end-device image refuses router init whatever the arguments — which is
+exactly what argument-free `0x30` being refused identically meant. No parameter could ever have
+fixed it.
+
+`0x21` is the sibling init with the end-device shape (`FUN_080207c0`: `pan_lo`, `epan[0..7]`,
+`mode`, `cfg`). In one run, on one radio, seconds apart:
+
+```
+ZBX seq: 0x20 router init (control)   ->  01 03 20 01 00    status 0x01  REFUSED
+ZBX seq: 0x26 rejoin                  ->  01 03 26 00 00    status 0x00  ACCEPTED
+ZBX 0x21 mode=02 cfg=00               ->  01 03 21 00 00    status 0x00  ACCEPTED
+```
+
+After the first accepted `0x21` the radio stops answering the rest of a sweep: it is busy scanning.
+
+### The `0x05` network info, decoded
+
+```
+05 1c ff c4 0b c1 05 00 6f 0d 00 ff fe 01 07 15 20 09 50 10 00 02 00 ...
+      ^^ channel 0xff = none
+         ^^^^^^^^^^^^^^^^^^^^^^^ EUI c4:0b:c1:05:00:6f:0d:00
+                                 ^^^^^ node id 0xfffe = unassigned
+                                                      ^^ 2.0   ^^ 5.0  (nibble-split versions)
+                                          extended PAN (b[0x16..0x1d]) = all zeros
+```
+
+Channel `0xff`, node `0xfffe`, extended PAN zero: the radio is on no network. Worth noting the
+capture filter that hid this for so long — it matched `ZBX rx 01/03/07` and silently dropped
+`ZBX rx 05`, so the one reply that described the radio's actual state was never printed.
+
+### Confirmed on air
+
+`0x21` accepted makes the radio scan, and the scan is visible from the CA-1's mfglib sniffer as
+802.15.4 beacon requests — FCF `0x0803`, dst PAN and address `ffff`, MAC command `0x07`:
+
+```
+01:47:58.354 PACKET ch11 lqi=211 rssi=10  03083bffffffff07cdc3
+01:48:01.029 PACKET ch11 lqi=212 rssi=10  03084bffffffff07cc06
+01:48:02.957 PACKET ch11 lqi=212 rssi=10  03085bffffffff077c44
+```
+
+The band is busy with the house's own network, so the attribution is a differential rather than an
+assertion — same sniffer, same channel, back-to-back builds differing only in `ZBX_PROBE`:
+
+| T2i join | beacon requests captured |
+|---|---|
+| disabled (`ZBX_PROBE 0`) | **0** |
+| enabled (`ZBX_PROBE 1`) | **9** |
+
+**The remote transmits, and the CA-1 receives it.** It has not joined anything yet — there is no
+coordinator with permit-join open on a PAN it will accept, so the scan finds nothing and retries.
+That is the next step, and it is ordinary work now rather than a wall: form a network on the CA-1
+over EZSP, open permit-join, and feed its real extended PAN and channel into the `0x21` payload
+instead of the placeholder `pan_lo 0x35` / own-EUI epan used here.
+
 The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
 `ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.
 
