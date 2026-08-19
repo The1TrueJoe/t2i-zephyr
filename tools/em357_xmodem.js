@@ -19,19 +19,19 @@ function crc16(buf) {                       // CCITT poly 0x1021, init 0 - XMODE
 
 const fd = fs.openSync(DEV, "r+");
 const rb = Buffer.alloc(256);
-function rd(ms) {
+function rd(ms, want) {
   const end = Date.now() + ms; let out = Buffer.alloc(0);
   while (Date.now() < end) {
     let n = 0;
     try { n = fs.readSync(fd, rb, 0, rb.length, null); } catch (e) { n = 0; }
-    if (n > 0) out = Buffer.concat([out, rb.slice(0, n)]); else sleep(20);
+    if (n > 0) { out = Buffer.concat([out, rb.slice(0, n)]); if (want !== undefined && out.includes(want)) return out; } else sleep(5);
   }
   return out;
 }
 const wr = (b) => fs.writeSync(fd, b, 0, b.length, null);
 
-execSync("devmem 0x0209C000 32 0x00030400"); sleep(300);
-execSync("devmem 0x0209C000 32 0x00030500"); sleep(1500);
+//execSync("devmem 0x0209C000 32 0x00030400"); sleep(300);
+//execSync("devmem 0x0209C000 32 0x00030500"); sleep(1500);
 rd(200);
 wr(Buffer.from("\r\n"));
 const menu = rd(1500);
@@ -57,7 +57,7 @@ for (let i = 0; i < blocks; i++) {
   let ok = false;
   for (let retry = 0; retry < 6 && !ok; retry++) {
     wr(pkt);
-    const r = rd(2000);
+    const r = rd(2000, ACK);
     if (r.includes(ACK)) ok = true;
     else if (r.includes(CAN)) { console.log("cancelled at block", bn); process.exit(1); }
   }

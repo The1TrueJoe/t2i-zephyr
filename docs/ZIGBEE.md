@@ -509,4 +509,37 @@ node /tmp/xmodem.js /tmp/ncp/control4/firmware/pro/em357-uart-rts-cts-use-with-s
 The bootloader lives in a protected region and option `1` does not touch it, so a failed transfer
 is retryable — the radio cannot be lost this way.
 
-Afterwards `2` (run) should give `RSTACK` (`1a c1 02 ...`), and then `zigbee-ap` can drive it.
+### FLASHED AND SPEAKING EZSP — 2026-08-18
+
+```
+bootloader ready
+receiver requested XMODEM-CRC
+sending 105344 bytes in 823 blocks
+EOT reply: 06 ... "Serial upload complete"
+```
+
+Then `2` (run), and an ASH reset:
+
+```
+ASH RST reply: 1a c1 02 0b 0a 52 7e
+                  ^^ 0xC1 = RSTACK, ASH v2, reset code 0x0b
+```
+
+Byte-identical to what `openHC/docs/hardware-interfaces.md` recorded from a working unit. **The
+CA-1 is now an EZSP coordinator.**
+
+Two traps cost real time here, both worth remembering:
+
+* **Do not reset before talking to the bootloader.** It sits at `BL >` and answers any input
+  immediately; after a `devmem` reset pulse it returned nothing in the window allowed, which
+  looked exactly like a dead radio. The working sequence is: leave `zigbee_reset` alone (booted
+  state = HIGH = released), `stty ... -crtscts`, send `\r\n`, get the menu.
+* **`stty ... min 0 time 3` is required** before driving the port from node. Without it `raw`
+  implies `min 1`, so `fs.readSync` blocks forever on a byte that never comes — a hang that burns
+  no CPU and looks like a slow transfer. A first run sat there 16 minutes doing nothing.
+
+`tools/em357_xmodem.js` also returns as soon as the ACK arrives rather than waiting out a fixed
+window; the naive version would have taken ~27 minutes instead of seconds.
+
+Next: point `zigbee-ap` at `/dev/ttymxc4` (115200, RTS/CTS for the application — the *bootloader*
+is the no-flow-control one). The CA-1 has `node v20.15.1`, so it can run on the box itself.
