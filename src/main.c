@@ -530,9 +530,22 @@ int main(void)
 					at_log("S00 chan15", reply);
 					st_at = 3;
 					break;
-				case 3:   /* main function: use preconfigured TC link key (bit 8) */
-					em250_at("ATS0A=0100:password", B, reply, sizeof reply, 600);
-					at_log("S0A preconf", reply);
+				case 3:   /* main function: end device (bit E) + preconfigured TC
+					   * link key (bit 8). 0x4100 joins as an end device, not a
+					   * router; 0x8100 would be a sleepy end device (battery). */
+					em250_at("ATS0A=4100:password", B, reply, sizeof reply, 600);
+					at_log("S0A enddev", reply);
+					/* xCAST framing so the coordinator's herdsman surfaces our
+					 * unicasts to the application: HA profile 0x0104 (S44), source
+					 * and destination endpoint 1 (S40 = 0x0101), cluster 0x0006
+					 * (S42). Without a real profile the frames land on Telegesis's
+					 * private 0xC091 and herdsman drops them before any converter. */
+					em250_at("ATS44=0104", B, reply, sizeof reply, 500);
+					at_log("S44 profile", reply);
+					em250_at("ATS40=0101", B, reply, sizeof reply, 500);
+					at_log("S40 endpoints", reply);
+					em250_at("ATS42=0006", B, reply, sizeof reply, 500);
+					at_log("S42 cluster", reply);
 					st_at = 4;
 					break;
 				case 4:   /* network status: already joined? */
@@ -568,11 +581,22 @@ int main(void)
 							 k, keypad_name(k));
 						em250_at_wait(cmd, B, reply, sizeof reply, 3000);
 						at_log("UCAST key", reply);
+						/* A send that is not ACKed means the coordinator is gone
+						 * (it re-formed the mesh) — drop back to re-check and
+						 * rejoin rather than shouting at a dead network. */
+						if (!strstr(reply, "ACK")) {
+							joined = 0;
+							st_at = 4;
+						}
 					} else if (joined && (beat++ % 30) == 0) {
-						/* Occasional keepalive so a long-idle link stays proven. */
+						/* Keepalive; same rejoin-on-loss check as a real press. */
 						em250_at_wait("AT+UCAST:0000=IDLE", B, reply,
 							      sizeof reply, 3000);
 						at_log("UCAST idle", reply);
+						if (strstr(reply, "ERROR")) {
+							joined = 0;
+							st_at = 4;
+						}
 					}
 					break;
 				}
