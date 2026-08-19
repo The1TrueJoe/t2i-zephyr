@@ -77,6 +77,10 @@ void zbx_tx_raw(const uint8_t *b, size_t n);
 int zbx_getc(int timeout_ms);
 void zbx_getc_flush(void);
 
+/* Set the USART3 baud divisor (0 = compile-time default). Returns the previous value.
+ * Needed to talk AT to Telegesis firmware, which runs at 19200 rather than 115200. */
+uint32_t zbx_set_brr(uint32_t brr);
+
 /* PCLK1 in Hz, computed from RCC. ZBX_BRR is only correct at 30 MHz. */
 uint32_t zbx_pclk1(void);
 

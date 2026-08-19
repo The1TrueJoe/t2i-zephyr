@@ -88,6 +88,51 @@ void em250_bl_run(void)
 	for (int w = 0; w < 40; w++) { drain(); k_msleep(50); }
 }
 
+size_t em250_at(const char *cmd, uint32_t brr, char *out, size_t max, int wait_ms)
+{
+	uint32_t prev = zbx_set_brr(brr);
+	size_t n = 0;
+	int c;
+
+	zbx_getc_flush();
+	zbx_tx_raw((const uint8_t *)cmd, strlen(cmd));
+	zbx_tx_raw((const uint8_t *)"\r", 1);
+
+	/* Telegesis echoes the command then answers with a line and OK/ERROR. Collect whatever
+	 * arrives within the window. */
+	while ((c = zbx_getc(wait_ms)) >= 0 && n + 1 < max) {
+		out[n++] = (char)c;
+		wait_ms = 40;   /* after the first byte, only wait for the inter-byte gap */
+	}
+	out[n] = 0;
+	zbx_set_brr(prev);
+	return n;
+}
+
+size_t em250_at_wait(const char *cmd, uint32_t brr, char *out, size_t max, int total_ms)
+{
+	uint32_t prev = zbx_set_brr(brr);
+	int64_t deadline = k_uptime_get() + total_ms;
+	size_t n = 0;
+
+	zbx_getc_flush();
+	zbx_tx_raw((const uint8_t *)cmd, strlen(cmd));
+	zbx_tx_raw((const uint8_t *)"\r", 1);
+
+	/* Scan and join stream their result (JPAN, +PANSCAN:) seconds after the OK, so read for
+	 * the whole window rather than stopping at the first inter-byte gap. */
+	while (k_uptime_get() < deadline && n + 1 < max) {
+		int c = zbx_getc(100);
+
+		if (c >= 0) {
+			out[n++] = (char)c;
+		}
+	}
+	out[n] = 0;
+	zbx_set_brr(prev);
+	return n;
+}
+
 static uint16_t crc16_xmodem(const uint8_t *d, size_t n)
 {
 	uint16_t c = 0;

@@ -284,6 +284,17 @@ void zbx_getc_flush(void)
 	rq_tail = rq_head;
 }
 
+/* Change the USART3 baud divisor at runtime. The Telegesis app defaults to 19200, not the 115200
+ * the RTI protocol and bootloader use, so talking AT to it means reprogramming BRR. 0 restores
+ * the compile-time default. */
+uint32_t zbx_set_brr(uint32_t brr)
+{
+	uint32_t prev = USART3_BRR;
+
+	USART3_BRR = brr ? brr : ZBX_BRR;
+	return prev;
+}
+
 int zbx_getc(int timeout_ms)
 {
 	for (int i = 0; i <= timeout_ms; i++) {

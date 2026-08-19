@@ -99,17 +99,20 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 #define ZBX_PROBE 0
 
 /* Reflash the EM250 with RTI's ZB-Pro coordinator image, once, on the first pass after boot.
- * Set 0 once the radio already runs ZBPro — re-running finds the app already present and reflashes
+ * Set 0 once the radio already runs Telegesis — re-running just reflashes the same image
  * needlessly. */
 #define EM250_FLASH 0
 
-/* With the radio on ZBPro, learn its host protocol: sweep framed opcodes and dump raw replies. */
-#define ZBPRO_PROBE 1
+/* Drive the Telegesis join state machine: join the CA-1's network and heartbeat-unicast to it. */
+#define AT_JOIN 1
 
 /* Synthetic key events, so the firmware -> USB -> bridge -> CA-1 path can be proven end to end
  * with nobody holding the remote. Real presses still report normally alongside these. */
+/* Synthetic keypresses so the button->RF->CA-1 path can be proven with nobody at the keypad. Each
+ * simulated DOWN queues its code for the RF unicast exactly as a real press does. Set 0 for a
+ * build that only forwards real presses. */
 #define KEY_SIM     1
-#define KEY_SIM_MS  1500   /* cycle through zero-payload queries, looking for any reply */
+#define KEY_SIM_MS  4000
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
@@ -182,6 +185,20 @@ static void zbx_pump(void)
 
 /* Printable-only dump, for the bootloader's banner and menu — emit_hex truncates too early
  * to show which option uploads an image. */
+/* Log a Telegesis AT reply as one line, control chars shown as ~. */
+static void at_log(const char *tag, char *reply)
+{
+	char line[160];
+
+	for (char *p = reply; *p; p++) {
+		if (*p == '\r' || *p == '\n') {
+			*p = '~';
+		}
+	}
+	snprintf(line, sizeof line, "AT %s -> %s", tag, reply[0] ? reply : "(silent)");
+	updater_emit(line);
+}
+
 /* Upload progress. Called every 8 blocks, mostly so the watchdog gets fed — the transfer runs far
  * longer than its ~8 s window. The emit is throttled separately so the log stays readable. */
 static void flash_progress(unsigned done, unsigned total)
@@ -372,6 +389,9 @@ int main(void)
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
 	static bool flashed;
+	/* A keypress waiting to go out over RF. Set by the key handler, drained by the AT join
+	 * state machine once the radio is on the CA-1's network. */
+	static volatile uint8_t rf_pending_key = KEY_NONE;
 	int64_t sim_at = 0;
 	unsigned sim_i = 0, sim_phase = 0;
 	int last_led = -1, led_pending = -1;
@@ -455,11 +475,12 @@ int main(void)
 					snprintf(line, sizeof(line), "EM250: before = %s", info);
 					updater_emit(line);
 
-					snprintf(line, sizeof(line), "EM250: uploading %u bytes",
-						 (unsigned)zbpro_ebl_len);
+					snprintf(line, sizeof(line), "EM250: flashing Telegesis %u bytes",
+						 (unsigned)etrx2_ebl_raw_len);
 					updater_emit(line);
 
-					ok = em250_flash_ebl(zbpro_ebl, zbpro_ebl_len, flash_progress);
+					ok = em250_flash_ebl(etrx2_ebl_raw, etrx2_ebl_raw_len,
+							     flash_progress);
 					updater_emit(ok ? "EM250: upload OK" : "EM250: upload FAILED");
 					safety_watchdog_feed();
 
@@ -476,34 +497,84 @@ int main(void)
 				}
 			}
 
-			/* The radio now runs ZBPro, which speaks RTI's CPNCT coordinator
-			 * protocol, not the ZBX the STM32 knows. Does it still use the same
-			 * 0x81/0x82 framing? Sweep framed zero-payload opcodes and dump every
-			 * raw byte back. Anything framed (starts 0x81) means the framing carries
-			 * over and only the opcodes differ; raw ASCII would mean it fell back to
-			 * the bootloader. */
-			if (ZBPRO_PROBE && !flashed) {
-				static unsigned zp;
-				const uint8_t op = (uint8_t)(zp++ & 0xFF);
-				uint8_t f[2] = { op, 0x00 };
-				uint8_t raw[64];
-				size_t n;
+			/* Telegesis join state machine, at the confirmed 19200 baud.
+			 *
+			 * The radio answers AT. Walk it onto the CA-1's network: confirm alive,
+			 * read status, join (the CA-1 hands over the network key in the clear),
+			 * then once joined unicast a heartbeat to the coordinator at 0x0000 so
+			 * the CA-1's incomingMessageHandler proves the RF path end to end.
+			 *
+			 * Every reply is logged. This never touches updater.c, so USB recovery
+			 * stays intact whatever this does. */
+			if (AT_JOIN) {
+				static int st_at;
+				static int joined;
+				static unsigned beat;
+				char reply[160];
+				const uint32_t B = 0x061A;   /* 19200 */
 
-				if (zp == 1) {
-					updater_emit("ZBPRO framed-opcode sweep begins");
-				}
-				zbx_raw_reset();
-				zbx_send(f, sizeof f);
-				for (int w = 0; w < 8; w++) { zbx_pump(); k_msleep(25); }
-				n = zbx_raw(raw, sizeof raw);
-				if (n) {
-					int w = snprintf(line, sizeof line, "ZBPRO op %02x ->", op);
-
-					for (size_t i = 0; i < n && w < (int)sizeof line - 4; i++) {
-						w += snprintf(line + w, sizeof line - (size_t)w,
-							      " %02x", raw[i]);
+				switch (st_at) {
+				case 0:   /* confirm the radio */
+					em250_at("ATI", B, reply, sizeof reply, 500);
+					at_log("ATI", reply);
+					st_at = 1;
+					break;
+				case 1:   /* trust-centre link key = ZigBeeAlliance09 (HA default) */
+					em250_at("ATS09=5A6967426565416C6C69616E63653039:password",
+						 B, reply, sizeof reply, 800);
+					at_log("S09 linkkey", reply);
+					st_at = 2;
+					break;
+				case 2:   /* channel mask = channel 15 only (bit 4) */
+					em250_at("ATS00=0010", B, reply, sizeof reply, 600);
+					at_log("S00 chan15", reply);
+					st_at = 3;
+					break;
+				case 3:   /* main function: use preconfigured TC link key (bit 8) */
+					em250_at("ATS0A=0100:password", B, reply, sizeof reply, 600);
+					at_log("S0A preconf", reply);
+					st_at = 4;
+					break;
+				case 4:   /* network status: already joined? */
+					em250_at("AT+N", B, reply, sizeof reply, 800);
+					at_log("AT+N", reply);
+					if (strstr(reply, "+N=") && !strstr(reply, "NoPAN")) {
+						joined = 1;
+						st_at = 6;
+					} else {
+						st_at = 5;
 					}
-					updater_emit(line);
+					break;
+				case 5:   /* join — result streams seconds after OK */
+					em250_at_wait("AT+JN", B, reply, sizeof reply, 9000);
+					at_log("AT+JN", reply);
+					if (strstr(reply, "JPAN")) {
+						updater_emit("AT *** JOINED CA-1 ***");
+						joined = 1;
+						st_at = 6;
+					} else {
+						st_at = 4;   /* recheck / retry */
+					}
+					break;
+				case 6:   /* joined: unicast a pressed button to the coordinator (0x0000) */
+					if (joined && rf_pending_key != KEY_NONE) {
+						uint8_t k = rf_pending_key;
+						char cmd[48];
+
+						rf_pending_key = KEY_NONE;
+						/* Payload "K<code> <name>" — the code drives the Juno
+						 * remote mapping, the name keeps the CA-1 log readable. */
+						snprintf(cmd, sizeof cmd, "AT+UCAST:0000=K%u %s",
+							 k, keypad_name(k));
+						em250_at_wait(cmd, B, reply, sizeof reply, 3000);
+						at_log("UCAST key", reply);
+					} else if (joined && (beat++ % 30) == 0) {
+						/* Occasional keepalive so a long-idle link stays proven. */
+						em250_at_wait("AT+UCAST:0000=IDLE", B, reply,
+							      sizeof reply, 3000);
+						at_log("UCAST idle", reply);
+					}
+					break;
 				}
 				safety_watchdog_feed();
 			}
@@ -617,6 +688,7 @@ int main(void)
 			sim_at = k_uptime_get();
 			switch (sim_phase) {
 			case 0:
+				rf_pending_key = k;   /* feed the RF path, as a real press does */
 				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
 					 k, keypad_name(k), 0, 0);
 				updater_emit(ev);
@@ -644,6 +716,7 @@ int main(void)
 
 			if (st.key != KEY_NONE) {
 				beep_click();   /* stock clicks on every key, not just some */
+				rf_pending_key = st.key;   /* queue it for the RF unicast */
 				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
 					 st.key, st.key_name, st.key_row, st.key_col);
 			} else {

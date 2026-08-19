@@ -38,7 +38,18 @@ void em250_bl_run(void);
 bool em250_flash_ebl(const uint8_t *ebl, size_t len,
 		     void (*progress)(unsigned done, unsigned total));
 
-extern const uint8_t zbpro_ebl[];
-extern const size_t zbpro_ebl_len;
+/* Telegesis ETRX2 R3.0.8 — an EM250 AT-command image. Unlike RTI's TXBZB it is an open,
+ * documented end device: you set the network key and PAN over AT, so it joins the CA-1 with no
+ * preconfigured key, and it can sleep. Written by xxd, hence the _raw suffix. */
+extern const unsigned char etrx2_ebl_raw[];
+extern const unsigned int etrx2_ebl_raw_len;
+
+/* Send an AT command line (CR-terminated is added) and copy the reply into out.
+ * Returns bytes read. baud picks the USART3 divisor; the Telegesis default is 19200. */
+size_t em250_at(const char *cmd, uint32_t brr, char *out, size_t max, int wait_ms);
+
+/* Like em250_at but reads for the whole total_ms — for AT+JN / AT+PANSCAN, whose result streams
+ * seconds after the initial OK. */
+size_t em250_at_wait(const char *cmd, uint32_t brr, char *out, size_t max, int total_ms);
 
 #endif
