@@ -5,3 +5,12 @@ project(t2i_fw)
 target_sources(app PRIVATE src/main.c src/reset_hook.c src/hx8347_fsmc.c src/touch.c
                           src/juno_logo.c src/accel.c src/keypad.c src/wake.c src/lowpower.c src/updater.c src/ui.c src/power.c src/safety.c src/battery.c src/funlight.c src/ir.c src/zbx.c
                           src/em250.c src/etrx2_ebl.c)
+
+# Binary assets are generated into C arrays at build time rather than committed as .c blobs, so
+# each can be replaced by swapping its source binary:
+#   tools/rti/etrx2.ebl        -> the EM250 radio image embedded for on-device reflash
+#   assets/juno_logo.rgb565    -> the boot splash (220x60 RGB565, see tools/make_logo.sh)
+set(gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
+generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/tools/rti/etrx2.ebl ${gen_dir}/etrx2_ebl.inc)
+generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/assets/juno_logo.rgb565 ${gen_dir}/juno_logo.inc)
+target_include_directories(app PRIVATE ${gen_dir})
