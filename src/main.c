@@ -98,8 +98,13 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 #define ZBX_REPORT_MS 10000
 #define ZBX_PROBE 0
 
-/* Reflash the EM250 with RTI's ZB-Pro coordinator image, once, on the first pass after boot. */
-#define EM250_FLASH 1
+/* Reflash the EM250 with RTI's ZB-Pro coordinator image, once, on the first pass after boot.
+ * Set 0 once the radio already runs ZBPro — re-running finds the app already present and reflashes
+ * needlessly. */
+#define EM250_FLASH 0
+
+/* With the radio on ZBPro, learn its host protocol: sweep framed opcodes and dump raw replies. */
+#define ZBPRO_PROBE 1
 
 /* Synthetic key events, so the firmware -> USB -> bridge -> CA-1 path can be proven end to end
  * with nobody holding the remote. Real presses still report normally alongside these. */
@@ -469,6 +474,38 @@ int main(void)
 					}
 					safety_watchdog_feed();
 				}
+			}
+
+			/* The radio now runs ZBPro, which speaks RTI's CPNCT coordinator
+			 * protocol, not the ZBX the STM32 knows. Does it still use the same
+			 * 0x81/0x82 framing? Sweep framed zero-payload opcodes and dump every
+			 * raw byte back. Anything framed (starts 0x81) means the framing carries
+			 * over and only the opcodes differ; raw ASCII would mean it fell back to
+			 * the bootloader. */
+			if (ZBPRO_PROBE && !flashed) {
+				static unsigned zp;
+				const uint8_t op = (uint8_t)(zp++ & 0xFF);
+				uint8_t f[2] = { op, 0x00 };
+				uint8_t raw[64];
+				size_t n;
+
+				if (zp == 1) {
+					updater_emit("ZBPRO framed-opcode sweep begins");
+				}
+				zbx_raw_reset();
+				zbx_send(f, sizeof f);
+				for (int w = 0; w < 8; w++) { zbx_pump(); k_msleep(25); }
+				n = zbx_raw(raw, sizeof raw);
+				if (n) {
+					int w = snprintf(line, sizeof line, "ZBPRO op %02x ->", op);
+
+					for (size_t i = 0; i < n && w < (int)sizeof line - 4; i++) {
+						w += snprintf(line + w, sizeof line - (size_t)w,
+							      " %02x", raw[i]);
+					}
+					updater_emit(line);
+				}
+				safety_watchdog_feed();
 			}
 
 			/* Display state, repeated rather than printed once at boot: the boot banner is
