@@ -95,7 +95,12 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 
 /* How often to report the radio link over USB. */
 #define ZBX_REPORT_MS 10000
-#define ZBX_PROBE 1   /* cycle through zero-payload queries, looking for any reply */
+#define ZBX_PROBE 0
+
+/* Synthetic key events, so the firmware -> USB -> bridge -> CA-1 path can be proven end to end
+ * with nobody holding the remote. Real presses still report normally alongside these. */
+#define KEY_SIM     1
+#define KEY_SIM_MS  1500   /* cycle through zero-payload queries, looking for any reply */
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
@@ -164,6 +169,88 @@ static void zbx_pump(void)
 	if (n) {
 		zbx_report(frame, n, "rx");
 	}
+}
+
+/* Printable-only dump, for the bootloader's banner and menu — emit_hex truncates too early
+ * to show which option uploads an image. */
+static void emit_ascii(const char *tag, const uint8_t *b, size_t n)
+{
+	char line[200];
+	size_t k = (size_t)snprintf(line, sizeof line, "%s: ", tag);
+
+	for (size_t i = 0; i < n && k + 2 < sizeof line; i++) {
+		if (b[i] == '\r' || b[i] == '\n') {
+			line[k++] = '~';
+		} else {
+			line[k++] = (b[i] >= 0x20 && b[i] < 0x7f) ? (char)b[i] : '.';
+		}
+	}
+	line[k] = 0;
+	updater_emit(line);
+}
+
+static void emit_hex(const char *tag, const uint8_t *b, size_t n)
+{
+	char line[160];
+	size_t m = n < 32 ? n : 32;
+	size_t k = (size_t)snprintf(line, sizeof line, "%s [%u]: ", tag, (unsigned)n);
+
+	for (size_t i = 0; i < m && k + 4 < sizeof line; i++) {
+		k += (size_t)snprintf(&line[k], sizeof line - k, "%02x ", b[i]);
+	}
+	if (k + 2 < sizeof line) {
+		line[k++] = '|';
+		for (size_t i = 0; i < m && k + 2 < sizeof line; i++) {
+			line[k++] = (b[i] >= 0x20 && b[i] < 0x7f) ? (char)b[i] : '.';
+		}
+		line[k++] = '|';
+	}
+	line[k] = 0;
+	updater_emit(line);
+}
+
+/* Enter the EM250's standalone bootloader and PROVE we are in it.
+ *
+ * 0x08 launches it, but entry is timing-sensitive: bare CR or short waits silently do nothing,
+ * and a sweep run against a radio that never entered looks exactly like a sweep that found
+ * nothing. So verify the banner and retry rather than assume. */
+static bool bl_enter(void)
+{
+	static const uint8_t c02[] = { 0x02, 0x00 };
+	static const uint8_t c08[] = { 0x08, 0x00 };
+	static const uint8_t crlf[] = { '\r', '\n' };
+	uint8_t raw[192];
+
+	for (int attempt = 0; attempt < 4; attempt++) {
+		size_t n;
+
+		zbx_send(c02, sizeof c02);
+		for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
+		safety_watchdog_feed();
+
+		zbx_raw_reset();
+		zbx_send(c08, sizeof c08);
+		for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
+		safety_watchdog_feed();
+
+		for (int round = 0; round < 4; round++) {
+			zbx_raw_reset();
+			zbx_tx_raw(crlf, sizeof crlf);
+			for (int w = 0; w < 20; w++) { zbx_pump(); k_msleep(50); }
+			n = zbx_raw(raw, sizeof raw);
+			safety_watchdog_feed();
+
+			for (size_t i = 0; i + 5 <= n; i++) {
+				if (memcmp(&raw[i], "EM250", 5) == 0) {
+					return true;
+				}
+			}
+		}
+		zbx_uart_init();          /* PC13 reset and try again */
+		k_msleep(500);
+		safety_watchdog_feed();
+	}
+	return false;
 }
 
 int main(void)
@@ -305,6 +392,8 @@ int main(void)
 	};
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
+	int64_t sim_at = 0;
+	unsigned sim_i = 0, sim_phase = 0;
 	int last_led = -1, led_pending = -1;
 	int64_t key_down_at = 0;
 	bool key_held_sent = false;
@@ -358,57 +447,58 @@ int main(void)
 			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
 			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
 			 * RX), not the radio, and no amount of framing work would ever have helped. */
-			/* ZigBee bring-up, once. 0x20 is ROUTER init ("ZbxRx router init cmd
-			 * resp") and this handheld's EM250 runs an end-device image, so it is
-			 * refused with status 0x01 whatever the arguments — which is what
-			 * argument-free 0x30 being refused identically was telling us all
-			 * along. 0x21 is the end-device init (FUN_080207c0: pan_lo,
-			 * epan[0..7], mode, cfg) and it answers status 0x00.
-			 *
-			 * Open the link once, then re-issue 0x21 every pass: a join scan that
-			 * finds nothing drops back to idle, so retrying is what keeps a scan in
-			 * flight for a sniffer parked on one channel to catch. */
-			static bool zbx_brought_up;
-
-			/* 0x20 is ROUTER init and this handheld's EM250 runs an end-device
-			 * image, so it is refused (status 0x01) whatever the arguments — which
-			 * is what argument-free 0x30 refusing identically meant. 0x21 is the
-			 * end-device init (FUN_080207c0: pan_lo, epan[0..7], mode, cfg), and
-			 * cfg=3 is the one value that actually attempts a secured join.
-			 *
-			 * That join reaches the CA-1 — it associates as a child and is then
-			 * dropped with stack status 0xAF, EMBER_PRECONFIGURED_KEY_REQUIRED.
-			 * We do not have RTI's link key; it lives in the EM250 image. But we
-			 * are the host, so we tried 0x22/0x23/0x24 (8 bytes each, no encoder in
-			 * stock — two writes would be a 16-byte key). All three answer status
-			 * 0x01: this radio image will not take a host-supplied key. The fix was
-			 * on the coordinator instead — see tools/ca1_form.js. */
-			static bool zbx_opened;
+			/* Is 0x50/0x51/0x52 Ember's mfglib? The shape matches exactly —
+			 * start / set-something / end — and mfglib can transmit raw 802.15.4
+			 * with NO network, which would make the whole key problem irrelevant:
+			 * the remote could send button presses as raw frames for the CA-1 to
+			 * sniff. Long dwells so the sniffer has time to land on the channel. */
+			static unsigned mpass;
 
 			if (ZBX_PROBE) {
-				static const uint8_t epan[8] = { 0x54,0x32,0x69,0x00,0x00,0x00,0x00,0x01 };
-				uint8_t c21[13] = { 0x21, 0x0B, 0x35 };
+				static const uint8_t c02[] = { 0x02, 0x00 };
+				static const uint8_t steps[][8] = {
+					{ 0x50, 0x00 },                              /* start */
+					{ 0x51, 0x03, 0x0F, 0x00, 0x00 },            /* arg = 15 first  */
+					{ 0x51, 0x03, 0x00, 0x00, 0x0F },            /* arg = 15 last   */
+					{ 0x51, 0x03, 0x00, 0x0F, 0x00 },            /* arg = 15 middle */
+					{ 0x40, 0x04, 0xFF, 0xAA, 0x55, 0xF0 },      /* try a raw send  */
+					{ 0x52, 0x00 },                              /* end */
+				};
+				static const uint8_t slen[] = { 2, 5, 5, 5, 6, 2 };
+				static const char *what[] = {
+					"0x50 start", "0x51 ch-first", "0x51 ch-last",
+					"0x51 ch-mid", "0x40 raw send", "0x52 end",
+				};
+				const unsigned k = mpass++ % 6;
+				const uint8_t *pl;
+				size_t n;
+				bool got = false;
 
-				memcpy(&c21[3], epan, 8);
-				c21[11] = 0x02;
-				/* cfg swept 0..7: 0-2 make no attempt at all, 3-7 are all accepted
-				 * and all end at 0xAF. Nothing on this side relaxes the key
-				 * requirement, so settle on 3. */
-				c21[12] = 3;
-
-				if (!zbx_opened) {
-					static const uint8_t c02[] = { 0x02, 0x00 };
-
-					zbx_opened = true;
-					updater_emit("ZBX 0x02 open");
+				if (mpass == 1) {
 					zbx_send(c02, sizeof c02);
-					for (int w = 0; w < 40; w++) { zbx_pump(); k_msleep(50); }
+					for (int w = 0; w < 30; w++) { zbx_pump(); k_msleep(50); }
+					safety_watchdog_feed();
 				}
 
-				snprintf(line, sizeof(line), "ZBX 0x21 join cfg=%u", c21[12]);
+				snprintf(line, sizeof(line), "MFG %s", what[k]);
 				updater_emit(line);
-				zbx_send(c21, sizeof c21);
-				for (int w = 0; w < 60; w++) { zbx_pump(); k_msleep(50); }
+				while (zbx_poll(&pl)) { }
+				zbx_send(steps[k], slen[k]);
+
+				for (int w = 0; w < 240; w++) {          /* ~12 s dwell */
+					k_msleep(50);
+					while ((n = zbx_poll(&pl)) != 0) {
+						if (n >= 4 && pl[0] == 0x01 && !got) {
+							snprintf(line, sizeof(line), "  reply op=%02x st=%02x",
+								 pl[2], pl[3]);
+							updater_emit(line);
+							got = true;
+						}
+					}
+					if ((w % 40) == 0) {
+						safety_watchdog_feed();
+					}
+				}
 				safety_watchdog_feed();
 			}
 
@@ -498,6 +588,47 @@ int main(void)
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();
 		st.key_name = keypad_name(st.key);
+
+		/* Synthetic key events. The pipeline (firmware -> USB -> bridge -> CA-1 ->
+		 * Juno remote contract) has to be provable with nobody holding the remote,
+		 * so KEY_SIM walks the real key table emitting the same DOWN/HELD/UP lines
+		 * a finger would. Same code path, same format — set KEY_SIM 0 for a build
+		 * that only reports real presses. */
+		if (KEY_SIM && k_uptime_get() - sim_at >= KEY_SIM_MS) {
+			static const uint8_t sim_keys[] = {
+				138,   /* Vol + */
+				139,   /* Vol - */
+				140,   /* Ch +  */
+				141,   /* Ch -  */
+				135,   /* OK    */
+				143,   /* Menu  */
+				142,   /* Guide */
+				129,   /* Mute  */
+			};
+			char ev[48];
+			uint8_t k = sim_keys[sim_i % (sizeof sim_keys)];
+
+			sim_at = k_uptime_get();
+			switch (sim_phase) {
+			case 0:
+				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
+					 k, keypad_name(k), 0, 0);
+				updater_emit(ev);
+				sim_phase = (sim_i % 3 == 0) ? 1 : 2;   /* every third is a hold */
+				break;
+			case 1:
+				snprintf(ev, sizeof(ev), "KEY HELD %u %s", k, keypad_name(k));
+				updater_emit(ev);
+				sim_phase = 2;
+				break;
+			default:
+				snprintf(ev, sizeof(ev), "KEY UP %u %s", k, keypad_name(k));
+				updater_emit(ev);
+				sim_phase = 0;
+				sim_i++;
+				break;
+			}
+		}
 
 		/* Report key transitions to the host over USB CDC. This is the path to
 		 * publishing button presses without the radio: tools/t2i_mqtt_bridge.py

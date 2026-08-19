@@ -227,8 +227,14 @@ static uint32_t st_frames, st_bad, st_bytes;
 /* Last raw bytes off the wire, before any framing. The frame counters alone cannot tell
  * "the radio is silent" from "the radio is talking and we are misframing it", and those need
  * completely different fixes. */
-#define ZBX_RAW_KEEP 24
+#define ZBX_RAW_KEEP 192
 static uint8_t raw_ring[ZBX_RAW_KEEP];
+
+/* Raw byte FIFO. The ZBX parser is useless once the radio is in its bootloader — XMODEM needs
+ * single bytes with timeouts, not frames. */
+#define RAWQ 1024
+static volatile uint8_t rawq[RAWQ];
+static volatile uint16_t rq_head, rq_tail;
 static uint8_t raw_n;
 
 static uint8_t rx_idle_pd, rx_idle_pu;
@@ -264,6 +270,72 @@ uint32_t zbx_pclk1(void)
 	uint32_t ppre1 = (cfgr >> 10) & 7u;
 
 	return (ppre1 & 4u) ? (ahb >> ((ppre1 & 3u) + 1u)) : ahb;
+}
+
+static void tx_byte(uint8_t b);
+
+void zbx_raw_reset(void)
+{
+	raw_n = 0;
+}
+
+void zbx_getc_flush(void)
+{
+	rq_tail = rq_head;
+}
+
+int zbx_getc(int timeout_ms)
+{
+	for (int i = 0; i <= timeout_ms; i++) {
+		if (rq_tail != rq_head) {
+			uint8_t b = rawq[rq_tail];
+
+			rq_tail = (uint16_t)((rq_tail + 1u) % RAWQ);
+			return b;
+		}
+		k_msleep(1);
+	}
+	return -1;
+}
+
+/* Reset the EM250 and listen for a bootloader.
+ *
+ * The EM357 on the CA-1 comes up in its bootloader and prints a menu on the UART -- you send it
+ * "2" to run the app. If the EM250 does the same, the way in is a reset plus serial activity in
+ * the window before the app is launched, and no bootmode pin is needed at all. Ember's serial
+ * bootloader activates on a carriage return, so hold PC13 low, release, and blast CR/LF while
+ * capturing everything that comes back. Whatever happens, the app is one more reset away. */
+size_t zbx_bootloader_probe(uint8_t *out, size_t max, uint32_t brr, int ms)
+{
+	uint32_t saved = USART3_BRR;
+
+	if (brr) {
+		USART3_BRR = brr;
+	}
+	raw_n = 0;
+
+	GPIO_BSRR(GPIO_PORT_C) = 1u << (13 + 16);   /* nRESET low */
+	k_msleep(20);
+	GPIO_BSRR(GPIO_PORT_C) = 1u << 13;          /* release */
+
+	for (int i = 0; i < ms; i += 5) {
+		tx_byte('\r');
+		tx_byte('\n');
+		k_msleep(5);
+	}
+
+	if (brr) {
+		USART3_BRR = saved;
+	}
+	return zbx_raw(out, max);
+}
+
+/* Send bytes with no ZBX framing — for talking to whatever the radio becomes after 0x08. */
+void zbx_tx_raw(const uint8_t *b, size_t n)
+{
+	for (size_t i = 0; i < n; i++) {
+		tx_byte(b[i]);
+	}
 }
 
 size_t zbx_raw(uint8_t *out, size_t max)
@@ -306,6 +378,14 @@ static void zbx_isr(const void *arg)
 		st_bytes++;
 		if (raw_n < ZBX_RAW_KEEP) {
 			raw_ring[raw_n++] = b;
+		}
+		{
+			uint16_t nh = (uint16_t)((rq_head + 1u) % RAWQ);
+
+			if (nh != rq_tail) {
+				rawq[rq_head] = b;
+				rq_head = nh;
+			}
 		}
 		if (len) {
 			uint8_t nh = (uint8_t)((q_head + 1u) % ZBX_Q);

@@ -153,32 +153,149 @@ will not accept a network key sent in the clear. That is the one remaining block
 key we do not have — RTI's preconfigured link key is baked into the EM250 image, which we cannot
 read.
 
-Three things were tried against it, and all three are now closed:
+### The join gets all the way to key delivery
 
-1. **Set the key from the host.** We are the host, and `0x22`/`0x23`/`0x24` each take 8 bytes with
-   no encoder in stock — two writes would be a 16-byte key. All three answer status `0x01`. This
-   radio image will not take a host-supplied key; they are dead entries, not a hidden door.
-2. **Deliver the network key encrypted.** Without `EMBER_REQUIRE_ENCRYPTED_KEY` (0x0800) an
-   EmberZNet trust centre sends the network key *in the clear*, which is exactly what `0xAF`
-   refuses — a real bug in `ca1_form.js`, now fixed (bitmask `0x0B04`). Still `0xAF`, so the key
-   we encrypt with, `ZigBeeAlliance09`, is not the one the EM250 expects.
-3. **A looser `cfg`.** `cfg` is a full byte, so it was swept 0..7. Values 0-2 make no join attempt
-   at all; 3-7 are all accepted and all end at `0xAF`. Nothing on the remote relaxes the
-   requirement.
+Correcting an earlier reading in this document: `0xAF` is **not** "wrong key". Sweeping the trust
+centre's join policy showed the remote reaching every stage of a real join:
 
-**So the single remaining unknown is RTI's preconfigured link key**, and it is baked into the EM250
-image, which cannot be read out. Every other piece of the path is proven working.
+| trust centre | remote answers |
+|---|---|
+| `securityLevel 0` (no key at all) | `0xAD NO_NETWORK_KEY_RECEIVED` |
+| key **in the clear** (`setPolicy` decision 0) | `0xAC RECEIVED_KEY_IN_THE_CLEAR` |
+| key **encrypted**, any of 4 candidate keys | `0xAF PRECONFIGURED_KEY_REQUIRED` |
 
-Where that key might still be found, in rough order of promise:
+`0xAC` means the network key *arrived* and the remote refused it for being unencrypted. So the
+EM250 has `EMBER_REQUIRE_ENCRYPTED_KEY` set and no key to decrypt with. Both halves are baked in.
 
-* **Integration Designer.** It is already installed in the Parallels VM and it provisions RTI
-  systems, so it plausibly ships the key or derives it. `C:\Program Files (x86)\RTI\Integration
-  Designer` is worth a string/entropy scan.
-* **An RTI XP processor image**, which is the other half of this link and must hold the same key.
-* Sniffing a genuine RTI remote joining a genuine RTI processor would show the key transport, but
-  needs hardware we do not have.
+Two `setPolicy` gotchas cost real time and are worth recording: policies are **reset by
+`formNetwork`**, so setting one before forming silently does nothing (it still returns `00`); and
+`setPolicy` takes an `EzspDecisionId` while the callback reports an `EmberJoinDecision` — different
+enums. Measured mapping: `EzspDecisionId` 0 -> `SEND_KEY_IN_THE_CLEAR`, 1 -> `USE_PRECONFIGURED_KEY`,
+2 and 3 -> `DENY_JOIN`.
 
-Brute force is not an option: it is a 128-bit key.
+### Everything swept
+
+Remote side: `mode` 0-5; `cfg` 0-7 **and** every high bit (`0x08`,`0x10`,`0x20`,`0x40`,`0x80`,`0xFF`)
+— all accepted, all still `0xAC`; extended PAN in both byte orders; `pan_lo`; channel mask.
+Provisioning from the host is impossible: `0x22`/`0x23`/`0x24` return `0x01` from all six reachable
+states (after `0x02`, after `0x04`, after `0x32`, after `0x30`, after `0x31`, mid-`0x21`-join).
+`0x50` is accepted (`00`) but does nothing visible; `0x51`/`0x52` never answer.
+
+Coordinator side: stack profile 1 (no join attempt at all — **profile 2 is required**) and 2;
+security level 0 and 5; bitmask `0x0000`/`0x0200`/`0x0204`/`0x0304`/`0x0B04`; join decisions 0-4;
+preconfigured keys `ZigBeeAlliance09`, all-zero, all-`FF`, `00..0F`, and the remote's own EUI.
+
+### What RTI's own tooling says
+
+`ZBConfig.exe`, carved out of the Integration Designer install (Windows VM disk image, PE resource
+`name#1096/130/1033`), embeds a **complete EM250 EmberZNet image** — `xap2b-em250-em250-ZBPro`,
+98 KB, saved as `zbpro_em250.ebl`. Its strings describe RTI's scheme:
+
+```
+Failed to generate random link key.        Failed to generate random NWK key.
+Failed to set policy for requesting TC link keys.
+Trust Center no longer allowing joins.     RX [CPNCT_MSG_TYPE_EPID_REQ]
+app\ZBProNCT\ZBProNCT.c                    app\util\bootload\bootload-utils.c
+```
+
+So the ZB-Pro **generates its keys randomly** and lets joined devices *request* the trust-centre
+link key. `ZigBeeAlliance09` does not appear anywhere in the image, and the constant pool ahead of
+the string block holds only bit tables and address vectors — no 16-byte key. Whatever the T2i
+bootstraps with is not a well-known constant sitting in RTI's tool.
+
+### The radio's bootloader IS reachable — opcode 0x08
+
+Static analysis of stock's radio init (`FUN_0800BFB2`) settles the pin question. Its literal pool is
+`0x40004800` (USART3), `0x40020800` (GPIOC), `0x20006320` (the zbx object), and the only pins it
+touches are:
+
+| pin | role | evidence |
+|---|---|---|
+| PC10 | USART3 TX | `GPIO_PinAFConfig(GPIOC, 10, AF7)` at `0x800c31e` |
+| PC11 | USART3 RX | `GPIO_PinAFConfig(GPIOC, 11, AF7)` at `0x800c312` |
+| PC13 | nRESET | pin mask `0x2000` as output, then low / 1.4 ms / high |
+
+**Three signals, no boot-mode pin.** Nothing else is driven, so the EM250's bootloader activation
+line is not under software control. The stock image also contains no radio-bootload strings at all
+(the only match is `T2i Bootloader Version`, the STM32's own) -- RTI never bootloads the radio from
+the host; the ZB-Pro does it over the air.
+
+The remaining software route would be the radio app launching its own bootloader, so the last
+unprobed opcodes were tested. None does:
+
+| opcode | result |
+|---|---|
+| `0x06` | status `0x00` accepted, radio keeps running |
+| `0x74`, `0x75` | status `0x01` refused |
+| `0x80` | returns *data*, alternating `14 8a` / `12 01` -- a query, not a status |
+| `0x50` | status `0x00`, no visible effect |
+| `0x51`, `0x52` | never answer |
+
+Byte counters confirm it: every probe returned exactly one framed reply (`bad+0`, `bytes+8`), never
+the ASCII banner a bootloader would emit.
+
+**That conclusion was wrong, and the mistake is worth naming:** the opcode list above came from
+stock's *encoder* table -- commands the host knows how to build. The radio's receive side accepts
+commands stock never sends. Sweeping all 256 opcodes with a zero-length payload found one that is
+not in that table at all and that stops the radio speaking ZBX:
+
+```
+ZBX opcode sweep 0x00-0xff, zero payload
+ZBX op 08: SILENT after this - mode change!
+ZBX op 06: status 00      ZBX op 26: status 00     ZBX op 50/51/52: status 00
+ZBX op 21: status 06      ZBX op 31: status 00     ZBX op 32: status 05
+ZBX op 40: status 02      ZBX op 80: status 12     ZBX op 87: status 14
+```
+
+**`0x08` launches the EM250's standalone bootloader.** Send it, then CR+LF:
+
+```
+after 0x08: 81 01 03 08 00 00 f4 82        (acked, status 00)
+MENU:  ~~EM250 Bootloader. v20 b09~~~~1. upload ebl~~2. run~~3. ebl info~~BL > .
+```
+
+The same Ember standalone bootloader as the CA-1's EM357, reached over USART3 with **no bootmode
+pin and no hardware access** -- and `2. run` returns to the application, which was confirmed by ZBX
+coming straight back with a `0x05` network-info reply. So flashing the radio is **reversible**.
+
+Reproducing it needs the exact cadence: `0x02` open, then `0x08`, then **CR+LF** rounds about a
+second apart. A bare CR, or longer gaps, produce nothing at all.
+
+What remains is a suitable image. `3. ebl info` will describe the one currently installed, and
+`zbpro_em250.ebl` (RTI's own, carved from ZBConfig.exe) is a known-good EM250 image to compare
+against -- though it is the ZB-Pro *coordinator* app, not an NCP.
+
+### What the bootloader can and cannot do
+
+Entry is reliable but fussy, so `bl_enter()` verifies the banner and retries rather than assuming —
+a sweep run against a radio that never entered looks exactly like a sweep that found nothing, and
+that cost a wasted run.
+
+Sweeping every printable character at the `BL >` prompt found **no undocumented commands**: only
+`3` responds, with `xap2b-em250-em250-TXBZB` (so the installed image is RTI's T2i radio build, as
+against the ZB-Pro's `-ZBPro`). There is no read or dump, so **the EM250's flash cannot be
+extracted** and RTI's link key cannot be lifted out of it.
+
+`0x80` looked like a memory read — 5-byte payload, two data bytes back, and XAP2b is 16-bit
+word-addressed — but it returns `1201` at every address probed (`0000`, `0001`, `0002`, `0100`,
+`1000`, `4000`, `8000`, `f000`, three reads each). It is a fixed status word. `0x87` answers once
+and then stops. No memory read exists.
+
+`0x26` acks `00` for all 60 combinations of addr x mode x cfg and produces **no stack status at
+all** — it is accepted but starts no join. Ruled out.
+
+### The one-way door
+
+Flashing the radio is **not** symmetric with flashing the CA-1's EM357, and the reason is worth
+stating plainly: opcode `0x08` is a command of the **TXBZB application**. It is the only route into
+the bootloader — there is no bootmode pin and the bootloader does not persist across a reset on its
+own. Overwrite TXBZB with an image that has no equivalent command and bootloader access is gone for
+good, with no copy of TXBZB anywhere to restore (Integration Designer does not ship one; the only
+`xap2b` images on the whole VM disk are the ZB-Pro's, inside `ZBConfig.exe`).
+
+If it is ever done, the upload protocol is known: ZBConfig drives the same bootloader over FTDI and
+its strings are pure XMODEM-CRC (`Got CRC16...`, `Got NAK...`, `Got CAN...`, `Sending EOT...`) —
+send `1`, wait for `C`, stream 128-byte CRC blocks, exactly as the EM357 was flashed.
 
 The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
 `ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.

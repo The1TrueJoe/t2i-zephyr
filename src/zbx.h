@@ -67,6 +67,16 @@ size_t zbx_raw(uint8_t *out, size_t max);
  * 1/1 = something is driving it (a live radio idles high). 0/1 = floating, nothing there. */
 void zbx_rx_line(uint8_t *pd, uint8_t *pu);
 
+/* Reset the EM250 and listen for a serial bootloader in the window before the app starts —
+ * the same way the CA-1's EM357 is reached. brr = 0 keeps the current baud. */
+size_t zbx_bootloader_probe(uint8_t *out, size_t max, uint32_t brr, int ms);
+void zbx_raw_reset(void);
+void zbx_tx_raw(const uint8_t *b, size_t n);
+
+/* Raw byte reads, for talking XMODEM to the radio's bootloader. -1 on timeout. */
+int zbx_getc(int timeout_ms);
+void zbx_getc_flush(void);
+
 /* PCLK1 in Hz, computed from RCC. ZBX_BRR is only correct at 30 MHz. */
 uint32_t zbx_pclk1(void);
 

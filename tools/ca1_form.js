@@ -76,8 +76,21 @@ acc = Buffer.alloc(0); txSeq = 0; rxSeq = 0;
 // else on the CA-1 uses this radio (no zigbee stack in /etc/init.d), so forming
 // here disturbs nothing; the busy channel-11 traffic is other hardware.
 const CHAN = 15, PANID = 0x0035;   // low byte 0x35 = the pan_lo the T2i sends
+// The T2i's EM250 reports stack version 2.0/5.0 -- EmberZNet 2.5, the ZigBee 2006/2007 era.
+// A 2006 device cannot join a ZigBee PRO (profile 2) network, so both the profile and the
+// security level are arguments now rather than assumptions: node ca1_form.js <profile> <seclevel>
+const PROFILE = Number(process.argv[2] || 2);
+const SECLVL  = Number(process.argv[3] || 5);
+// Security bitmask is an argument too. 0xAF is not "wrong key" -- it is "the trust centre
+// sent the key ENCRYPTED and I have no preconfigured key to decrypt it". So HAVE_PRECONFIGURED_KEY
+// (0x0100) is what was blocking the join; the EM250 wants the network key in the clear.
+const BITMASK = Number(process.argv[5] || 0x0200);   // HAVE_NETWORK_KEY only
 const EPAN = [0x54, 0x32, 0x69, 0x00, 0x00, 0x00, 0x00, 0x01];
-const HA_KEY = Buffer.from("ZigBeeAlliance09", "ascii");
+// Candidate preconfigured link key, hex, as argv[7]. The T2i answers 0xAC to a clear-text key
+// and 0xAF to an encrypted one, so the only unknown left is which key it expects.
+const HA_KEY = process.argv[7]
+  ? Buffer.from(process.argv[7], "hex")
+  : Buffer.from("ZigBeeAlliance09", "ascii");
 const NET_KEY = Buffer.from("t2i-zephyr-key01", "ascii");
 
 let seq = 0;
@@ -101,16 +114,20 @@ const u32 = (v) => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0x
 
 ezsp(0x00, [0x04], "version");
 // Stack profile 2 (ZigBee PRO) and security level 5 must be set before forming.
-ezsp(0x53, [0x0C, ...u16(2)], "cfg stackProfile=2");
-ezsp(0x53, [0x0D, ...u16(5)], "cfg securityLevel=5");
+ezsp(0x53, [0x0C, ...u16(PROFILE)], "cfg stackProfile=" + PROFILE);
+ezsp(0x53, [0x0D, ...u16(SECLVL)],  "cfg securityLevel=" + SECLVL);
 ezsp(0x53, [0x05, ...u16(8)], "cfg addressTableSize=8");
 
 // HAVE_NETWORK_KEY|HAVE_PRECONFIGURED_KEY|TRUST_CENTER_GLOBAL_LINK_KEY|REQUIRE_ENCRYPTED_KEY.
 // Without REQUIRE_ENCRYPTED_KEY (0x0800) the trust centre sends the network key in the
 // clear, which is exactly what the T2i refuses with 0xAF PRECONFIGURED_KEY_REQUIRED.
-ezsp(0x68, [...u16(0x0B04), ...HA_KEY, ...NET_KEY, 0x00,
-            0, 0, 0, 0, 0, 0, 0, 0], "setInitialSecurityState");
+ezsp(0x68, [...u16(BITMASK), ...HA_KEY, ...NET_KEY, 0x00,
+            0, 0, 0, 0, 0, 0, 0, 0], "setInitialSecurityState 0x" + BITMASK.toString(16));
 
+// The trustCenterJoinHandler frames came back with policyDecision 0x00 =
+// EMBER_USE_PRECONFIGURED_KEY, so the trust centre was never going to send the network key in
+// the clear -- which is exactly what 0xAD NO_NETWORK_KEY_RECEIVED then reports on the joiner.
+// EZSP_TRUST_CENTER_POLICY (0x00) -> EMBER_SEND_KEY_IN_THE_CLEAR (0x01).
 ezsp(0x20, [], "leaveNetwork", 3000);
 pump(1500);
 
@@ -128,8 +145,22 @@ if (np && np.length >= 12) {
   console.log("  panId       = 0x" + (np[10] | (np[11] << 8)).toString(16));
   console.log("  channel     =", np[13]);
 }
+// Policies are reset by leaveNetwork/formNetwork, so this has to come AFTER the form --
+// set before it, setPolicy returns 00 and the join frames still carry policyDecision 0x00.
+// Read it back: the status byte alone does not prove it stuck.
+const DECISION = Number(process.argv[6] || 1);
+ezsp(0x55, [0x00, DECISION], "setPolicy trustCenter=" + DECISION);
+// RTI's own ZB-Pro sets a TC-link-key-request policy ("Failed to set policy for requesting
+// TC link keys"), so a joiner that asks for the link key during join needs this allowed.
+// EZSP_TC_KEY_REQUEST_POLICY is policy id 5; sweep the decision, it is a different enum again.
+const TCKEY = Number(process.argv[8] || 0x51);
+ezsp(0x55, [0x05, TCKEY], "setPolicy tcKeyRequest=0x" + TCKEY.toString(16));
+const g5 = ezsp(0x56, [0x05], "getPolicy tcKeyRequest");
+if (g5) console.log("  tcKeyRequest readback = 0x" + g5[1].toString(16));
+const gp = ezsp(0x56, [0x00], "getPolicy trustCenter");
+if (gp) console.log("  policy readback = 0x" + gp[1].toString(16));
 ezsp(0x22, [0xFF], "permitJoining(forever)", 3000);
 console.log("permit-join open; listening for joins...");
-const until = Date.now() + 180000;
+const until = Date.now() + Number(process.argv[4] || 180000);
 while (Date.now() < until) handle(pump(1000), "evt");
 fs.closeSync(fd);
