@@ -543,3 +543,28 @@ window; the naive version would have taken ~27 minutes instead of seconds.
 
 Next: point `zigbee-ap` at `/dev/ttymxc4` (115200, RTS/CTS for the application — the *bootloader*
 is the no-flow-control one). The CA-1 has `node v20.15.1`, so it can run on the box itself.
+
+
+### EZSP is up — 2026-08-18
+
+```
+run  : fe1ac102092a107e          app booted, RSTACK
+RSTACK: 1ac1020b0a527e           reply to our ASH RST
+EZSP  : 00800004022047
+  -> EZSP version 4, stackType 2, stackVer 0x4720
+```
+
+`stackVer 0x4720` matches the `ZNCPVer:4720` in the `.ebl` header, so the image we flashed is the
+one answering. [tools/em357_ezsp.js](../tools/em357_ezsp.js) implements enough ASH to get there:
+byte stuffing, CRC-16/CCITT over the unstuffed body, the `0x42`-seeded XOR randomiser on the DATA
+field, and frame/ack numbering.
+
+**The one non-obvious rule: the radio returns to its bootloader whenever the port is reopened.**
+The bootloader *echoes* input, the NCP does not — a probe that reads back its own `1a c0 38 bc 7e`
+is talking to the bootloader, not the stack. So every session must, in a single open: send `\r\n`,
+send `2` to run the app, and only then speak ASH. Reopening and going straight to ASH silently
+talks to the bootloader.
+
+EZSP **v4** is the legacy protocol. zigbee2mqtt's modern `ember` driver wants v13 and will refuse
+this, but `core-zigbee`/`zigbee-ap` terminate ASH themselves rather than relying on that driver, so
+the version floor is not automatically a blocker here.
