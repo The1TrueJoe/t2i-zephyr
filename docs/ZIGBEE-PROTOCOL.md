@@ -1,5 +1,51 @@
 # Zigbee Protocol B
 
+## Why the radio refuses network commands — 2026-08-18
+
+Measured on hardware: queries work, network commands are refused.
+
+```
+0x04 -> 05 1c ...          get network info   (this is what 0x04 does)
+0x60 -> 61 0f ...          query, fine
+0x02 -> 0x03 event 0x02 -> 0x0b
+0x20 -> 01 03 20 01 00     status 0x01  REFUSED
+0x30 -> 01 03 30 01 00     status 0x01  REFUSED
+0x31 -> 01 03 31 07 00     status 0x07
+```
+
+**It is not the arguments.** Three things were tried and all were wrong guesses:
+
+* `mode` 0/1 — invalid, `FUN_08019E40` only ever emits 2, 3 or 4 for `0x20`
+  (arg 1 -> 2, 2 -> 3, 0x13 -> 4). Sending 2/3/4 changed nothing.
+* an all-zero extended PAN — replacing it with the radio's own EUI changed nothing.
+* the frame layout — `FUN_08020770` confirms ours is byte-exact: `epan[8]`, `pan_lo`,
+  `mode`, `chanmask` big-endian.
+
+The decisive observation is that **`0x30` carries no payload at all and is refused identically**.
+So it is a precondition, not a parameter.
+
+`FUN_080194F4` (the RX dispatcher) shows what the precondition is:
+
+```c
+if (*(char *)(zbx + 0x20) == 0) goto bail;     // state 0 = uninit: ignore everything
+...
+if (cmd == 0x20) {
+    log("ZbxRx router init cmd resp: state: %d", state);
+    if (state == 3) {                          // 3 = router init
+        if (status != 0x00 && status != 0x0B)  -> failure, retry after 1000ms
+        else if (obj[0x22] == 2) { ...; timer 40000; advance }
+        else if (obj[0x22] == 1) { ...; timer 20000; advance }
+```
+
+So: **`0x00` and `0x0B` are the success statuses**, `0x01` is a real rejection, and the radio only
+accepts `0x20` once the host has walked it into router-init through the preceding sequence — with
+20-40 second timers between steps and a retry path. State lives at `zbx+0x20`, a sub-mode at
+`zbx+0x22`, chanmask at `zbx+0x34`, the TX scratch at `zbx+0x48`.
+
+Replicating that ordered sequence — not sending better-formed one-shot commands — is what remains.
+The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
+`ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.
+
 ## LINK UP ON HARDWARE — 2026-08-18
 
 The host <-> EM250 link works from our firmware. Valid frames, checksums passing, `bad=0`:

@@ -372,10 +372,23 @@ int main(void)
 				 * cycled — a form and a join look different on air and either proves the
 				 * link. 0x30/0x31/0x32 take no payload and are the other plausible
 				 * "start the stack" triggers. */
+				/* mode is NOT free: FUN_08019E40 only ever emits 2, 3 or 4 for 0x20
+				 * (param 1 -> 2, 2 -> 3, 0x13 -> 4). We first tried 0 and 1, which is
+				 * precisely why the radio answered status 0x01. chanmask covers 11-26
+				 * (0x07FFF800) so it may pick any channel and the sniffer sweeps. */
+				/* epan = the radio's own EUI, as reported in the 0x05 network-info frame
+				 * (c4 0b c1 05 00 6f 0d 00). An all-zero extended PAN was refused with
+				 * status 0x01, and the frame layout is byte-correct against FUN_08020770,
+				 * so the argument is what it objects to. */
 				static const uint8_t net0[] = {
-					0x20, 0x0E, 0,0,0,0,0,0,0,0, 0x00, 0x00, 0x00,0x00,0x80,0x00 };
+					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
+					0x00, 0x02, 0x07,0xFF,0xF8,0x00 };
 				static const uint8_t net1[] = {
-					0x20, 0x0E, 0,0,0,0,0,0,0,0, 0x00, 0x01, 0x00,0x00,0x80,0x00 };
+					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
+					0x00, 0x03, 0x07,0xFF,0xF8,0x00 };
+				static const uint8_t net2[] = {
+					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
+					0x00, 0x04, 0x07,0xFF,0xF8,0x00 };
 				static const uint8_t s30[] = { 0x30, 0x00 };
 				static const uint8_t s31[] = { 0x31, 0x00 };
 				static const uint8_t s32[] = { 0x32, 0x00 };
@@ -390,8 +403,8 @@ int main(void)
 				static const uint8_t s04[] = { 0x04, 0x00 };
 				static const struct { const uint8_t *p; uint8_t n; } queries[] = {
 					{ s02, 2 }, { s04, 2 },
-					{ net0, sizeof net0 }, { s30, 2 },
-					{ net1, sizeof net1 }, { s31, 2 },
+					{ net0, sizeof net0 }, { net1, sizeof net1 },
+					{ net2, sizeof net2 }, { s30, 2 }, { s31, 2 },
 					{ q60, 2 },
 				};
 				static uint8_t qi;
