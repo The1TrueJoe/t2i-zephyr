@@ -568,3 +568,47 @@ talks to the bootloader.
 EZSP **v4** is the legacy protocol. zigbee2mqtt's modern `ember` driver wants v13 and will refuse
 this, but `core-zigbee`/`zigbee-ap` terminate ASH themselves rather than relying on that driver, so
 the version floor is not automatically a blocker here.
+
+
+### The CA-1 receives 802.15.4 — 2026-08-18
+
+[tools/em357_sniff.js](../tools/em357_sniff.js) puts the NCP into `mfglib` raw-receive
+(`mfglibStart` 0x83, `mfglibSetChannel` 0x8A, packets arrive as `mfglibRxHandler` 0x8E) and prints
+every frame with LQI and RSSI. Sweeping channels 11-26 found live traffic immediately:
+
+```
+PACKET ch11 len=.. lqi=194 rssi=69  41d8031bc2ffff69c51c3cb6d00ff27f3b01f04d4c4d4c...
+PACKET ch11 len=.. lqi=209 rssi=59  418880c75fffff0b5a0912fcff82b91d2e3d75c00101...
+```
+
+Real ZigBee: `41 d8` frame control, `ffff` broadcast PAN, encrypted payloads. The receive chain
+— EM357 -> EZSP/ASH -> node -> decoded packets — is proven.
+
+It needs full ASH sequencing, not one-shot frames: DATA control byte `(frmNum << 4) | ackNum`,
+every NCP DATA frame ACKed with `0x80 | ackNum`, and the same stuffing/CRC/randomiser as the
+version exchange.
+
+### What the T2i's EM250 will and will not do
+
+Queries work; network commands are refused:
+
+```
+ZBX tx 0x04  -> reply 05 1c ...        get network info  (this is what 0x04 does)
+ZBX tx 0x60  -> reply 61 0f ...        query, fine
+ZBX tx 0x02  -> 0x03 event 0x02 -> 0x0b   advances some state
+ZBX tx 0x20  -> reply 01 03 20 01 00   status 0x01 = REFUSED
+ZBX tx 0x30  -> reply 01 03 30 01 00   status 0x01 = REFUSED
+ZBX tx 0x31  -> reply 01 03 31 07 00   status 0x07
+```
+
+So the radio is healthy and talking, but will not form or join on our say-so yet. Sending `0x02`
+and `0x04` first was not enough. Open questions, in order:
+
+* `0x20`'s `mode` byte is not decoded — we tried 0 and 1 with an all-zero extended PAN, and an
+  all-zero epan may itself be invalid.
+* the network-info reply carries `b[15] = 0x15` = **channel 21**, so the radio may already be
+  configured for a channel we were not listening on. Worth re-reading the `0x05` layout against
+  `FUN_0802090E` properly rather than by eye.
+* the documented host state machine (`0 uninit, 1 opened, 2 query network, 3 router init, 4-8
+  join/leave`) implies an ordered sequence we have not reproduced; `FUN_0801944A` and the TWT
+  session layer are where that ordering lives.

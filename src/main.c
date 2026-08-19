@@ -363,15 +363,42 @@ int main(void)
 				 * The 0x6x family is strictly paired (reply = request + 1), so any
 				 * answer at all proves the link. Cycling because a silent radio and a
 				 * radio that ignores one particular opcode look identical. */
-				static const uint8_t queries[][2] = {
-					{ 0x60, 0x00 }, { 0x62, 0x00 },
-					{ 0x02, 0x00 }, { 0x04, 0x00 },
+				/* Network-shaped now, deliberately: this remote is not in service and the
+				 * whole point is to get RF off it so the CA-1's sniffer can see something.
+				 *
+				 * 0x20 layout from FUN_08020770 (docs/ZIGBEE-PROTOCOL.md): epan[0..7],
+				 * pan_lo, mode, chanmask big-endian u32. Channel 15 only (bit 15) so the
+				 * sniffer knows exactly where to listen. `mode` is not decoded, so it is
+				 * cycled — a form and a join look different on air and either proves the
+				 * link. 0x30/0x31/0x32 take no payload and are the other plausible
+				 * "start the stack" triggers. */
+				static const uint8_t net0[] = {
+					0x20, 0x0E, 0,0,0,0,0,0,0,0, 0x00, 0x00, 0x00,0x00,0x80,0x00 };
+				static const uint8_t net1[] = {
+					0x20, 0x0E, 0,0,0,0,0,0,0,0, 0x00, 0x01, 0x00,0x00,0x80,0x00 };
+				static const uint8_t s30[] = { 0x30, 0x00 };
+				static const uint8_t s31[] = { 0x31, 0x00 };
+				static const uint8_t s32[] = { 0x32, 0x00 };
+				static const uint8_t q60[] = { 0x60, 0x00 };
+				/* Ordered as a sequence, not a grab-bag. The radio answers queries but
+				 * refuses 0x20/0x30 with status 0x01, which matches the documented host
+				 * state machine (0 uninit, 1 opened, 2 query network, 3 router init, ...)
+				 * — we were commanding a stack that had never been opened. 0x02 and 0x04
+				 * are the two zero-payload TX opcodes that plausibly do that, so they run
+				 * first and the network command follows. */
+				static const uint8_t s02[] = { 0x02, 0x00 };
+				static const uint8_t s04[] = { 0x04, 0x00 };
+				static const struct { const uint8_t *p; uint8_t n; } queries[] = {
+					{ s02, 2 }, { s04, 2 },
+					{ net0, sizeof net0 }, { s30, 2 },
+					{ net1, sizeof net1 }, { s31, 2 },
+					{ q60, 2 },
 				};
 				static uint8_t qi;
 
-				snprintf(line, sizeof(line), "ZBX probe 0x%02x", queries[qi][0]);
+				snprintf(line, sizeof(line), "ZBX tx 0x%02x", queries[qi].p[0]);
 				updater_emit(line);
-				zbx_send(queries[qi], 2);
+				zbx_send(queries[qi].p, queries[qi].n);
 
 				/* Drain hard, immediately. USART3 here is polled with no RX interrupt and
 				 * no DMA, so the data register holds exactly one byte: at 115200 a reply
