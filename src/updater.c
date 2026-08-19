@@ -31,6 +31,7 @@
 #include <string.h>
 #include "updater.h"
 #include "safety.h"
+#include "zbx.h"   /* AT passthrough forwards host bytes to the radio */
 
 
 #define DBG(n)   (*(volatile uint32_t *)(0x2001FF20U + ((n) * 4U)))  /* 0..3 */
@@ -90,6 +91,16 @@ static void spi_pp(uint32_t a, const uint8_t *d, size_t n)
 {
 	uint8_t h[5] = {0x12, a >> 24, a >> 16, a >> 8, a};
 	spi_wren(); spi_send(h, 5, d, n); spi_wait();
+}
+/* 4-byte-address read (READ4, 0x13). Reads are always allowed regardless of block protection.
+ * Used by the host SPI-read/search commands, not by the update path. */
+static void spi_read4(uint32_t a, uint8_t *d, size_t n)
+{
+	uint8_t h[5] = {0x13, a >> 24, a >> 16, a >> 8, a};
+	struct spi_buf tx[2] = { {.buf = h, .len = 5}, {.buf = NULL, .len = n} };
+	struct spi_buf rx[2] = { {.buf = NULL, .len = 5}, {.buf = d, .len = n} };
+	struct spi_buf_set ts = {.buffers = tx, .count = 2}, rs = {.buffers = rx, .count = 2};
+	(void)spi_transceive_dt(&flash_spi, &ts, &rs);
 }
 /* Clear any latched erase/program error (else WIP stays stuck) and remove the
  * power-on block protection so the staging area is erasable/writable. */
@@ -288,6 +299,104 @@ static void updater_thread(void *a, void *b, void *c)
 		case 0x80:
 			data(frame + 1, 63);
 			break;
+
+		/* ---- Diagnostic commands, added for radio bring-up. These never touch the
+		 * update path (0x82/0x80/0x83) and are all bounded, so a host that never
+		 * sends them, or sends them and walks away, cannot stall the update
+		 * receiver. Replies come back as normal updater_emit text lines. ---- */
+
+		case 0x90: {
+			/* AT passthrough: frame[1]=len, frame[2..] = command bytes. Forward to
+			 * the radio at 19200 (Telegesis) and emit whatever comes back. */
+			uint8_t len = frame[1] < 60 ? frame[1] : 60;
+			char line[160];
+			size_t k = 0;
+			int c, budget = 500;
+
+			zbx_set_brr(0x061A);
+			zbx_getc_flush();
+			zbx_tx_raw(&frame[2], len);
+			zbx_tx_raw((const uint8_t *)"\r", 1);
+			while ((c = zbx_getc(budget)) >= 0 && k + 1 < sizeof line - 8) {
+				line[k++] = (c == '\r' || c == '\n') ? '~' : (char)c;
+				budget = 60;
+			}
+			line[k] = 0;
+			{
+				char out[176];
+
+				snprintf(out, sizeof out, "ATPASS: %s", k ? line : "(silent)");
+				updater_emit(out);
+			}
+			break;
+		}
+
+		case 0x91: {
+			/* SPI read: addr LE32 at frame[1..4], len LE16 at frame[5..6]. */
+			uint32_t addr = frame[1] | (frame[2] << 8) | (frame[3] << 16)
+					| ((uint32_t)frame[4] << 24);
+			uint32_t len = frame[5] | (frame[6] << 8);
+
+			while (len) {
+				uint8_t buf[24];
+				size_t chunk = len < sizeof buf ? len : sizeof buf;
+				char line[96];
+				int w = snprintf(line, sizeof line, "SPI %08x ", (unsigned)addr);
+
+				spi_read4(addr, buf, chunk);
+				for (size_t i = 0; i < chunk && w < (int)sizeof line - 3; i++) {
+					w += snprintf(line + w, sizeof line - (size_t)w,
+						      "%02x", buf[i]);
+				}
+				updater_emit(line);
+				addr += chunk;
+				len -= chunk;
+				safety_watchdog_feed();
+			}
+			updater_emit("SPI read done");
+			break;
+		}
+
+		case 0x92: {
+			/* Scan the whole 32 MB SPI-NOR for the "xap2b" EM250-image signature —
+			 * this answers whether a copy of the radio firmware (TXBZB) is staged
+			 * anywhere in SPI. */
+			static const uint8_t sig[5] = { 'x', 'a', 'p', '2', 'b' };
+			uint8_t buf[256];
+			uint32_t addr = 0;
+			unsigned hits = 0;
+
+			updater_emit("SPI search xap2b 0..0x2000000");
+			while (addr < 0x2000000u) {
+				spi_read4(addr, buf, sizeof buf);
+				for (size_t i = 0; i + sizeof sig <= sizeof buf; i++) {
+					if (memcmp(&buf[i], sig, sizeof sig) == 0) {
+						char line[48];
+
+						snprintf(line, sizeof line, "SPI HIT xap2b @ %08x",
+							 (unsigned)(addr + i));
+						updater_emit(line);
+						hits++;
+					}
+				}
+				addr += sizeof buf - sizeof sig;   /* overlap the boundary */
+				if ((addr & 0x3FFFFFu) < (sizeof buf)) {
+					char p[32];
+
+					snprintf(p, sizeof p, "SPI ..%08x", (unsigned)addr);
+					updater_emit(p);
+					safety_watchdog_feed();
+				}
+			}
+			{
+				char line[48];
+
+				snprintf(line, sizeof line, "SPI search done, %u hits", hits);
+				updater_emit(line);
+			}
+			break;
+		}
+
 		default:
 			break;
 		}

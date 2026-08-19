@@ -111,7 +111,7 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 /* Synthetic keypresses so the button->RF->CA-1 path can be proven with nobody at the keypad. Each
  * simulated DOWN queues its code for the RF unicast exactly as a real press does. Set 0 for a
  * build that only forwards real presses. */
-#define KEY_SIM     1
+#define KEY_SIM     0
 #define KEY_SIM_MS  4000
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
