@@ -42,7 +42,32 @@ accepts `0x20` once the host has walked it into router-init through the precedin
 20-40 second timers between steps and a retry path. State lives at `zbx+0x20`, a sub-mode at
 `zbx+0x22`, chanmask at `zbx+0x34`, the TX scratch at `zbx+0x48`.
 
-Replicating that ordered sequence — not sending better-formed one-shot commands — is what remains.
+Replicating that ordered sequence was tried and **did not help**. Implemented stock's own path —
+`0x32` (leave/reset) -> `0x04` (query network, which does return the `0x05` info) -> `0x20` — with
+watchdog-safe waits between steps. Still `01 03 20 01 00`.
+
+The full elimination, all measured on hardware:
+
+| varied | result |
+|---|---|
+| `mode` 0,1,2,3,4 (only 2/3/4 are legal per `FUN_08019E40`) | status `01` |
+| extended PAN: all zeros, then the radio's own EUI | status `01` |
+| `pan_lo`: `0x00`, then `0x35` (PAN 0 is not a valid ZigBee PAN) | status `01` |
+| chanmask: single channel, then all of 11-26 (`0x07FFF800`) | status `01` |
+| ordering: one-shot, then stock's `0x32` -> `0x04` -> `0x20` | status `01` |
+| frame layout | byte-exact against `FUN_08020770` |
+
+Never varies, including for `0x30`, which takes no arguments at all. So it is not the arguments and
+not the ordering.
+
+**Leading hypothesis: missing security material.** A ZigBee stack will not form or join without a
+network key, and opcodes `0x22`, `0x23`, `0x24` all carry **8-byte payloads** and have **no encoder
+in this build** (`FUN_080206F6` gives them length 8; the encoder table has `(none)`). Eight bytes is
+not a key, but it is the right size for a key *fragment* or an EUI/key-id — and their absence from
+this firmware's encoders suggests the pairing path that uses them lives in a build we have not
+looked at, or is driven from config. `0x74`/`0x75` are the same shape. That is where to look next,
+along with `zbx+0x24`/`zbx+0x25` (the two config bytes `FUN_08019198` copies in and
+`FUN_08019E40` passes as `param_4`/`cfg`).
 The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
 `ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.
 

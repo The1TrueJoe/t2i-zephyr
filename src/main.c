@@ -359,6 +359,53 @@ int main(void)
 			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
 			 * RX), not the radio, and no amount of framing work would ever have helped. */
 			if (ZBX_PROBE) {
+				/* Stock's ordering, from FUN_08019234 and FUN_080194F4:
+				 *
+				 *   state 1 (opened) -> send 0x04, 10s timer, state 2
+				 *   state 2          -> evaluate the 0x05 network info
+				 *   state 3          -> send 0x20/0x21/0x26 via FUN_08019E40
+				 *   0x20 refused     -> send 0x32, wait 1s, retry   <- stock's own remedy
+				 *
+				 * Firing one-shot 0x20s at a radio that was never walked through this is
+				 * why every one came back status 0x01. pan_lo is 0x35 rather than 0 —
+				 * PAN id 0 is not valid, and byte 10 carries only the low half of the
+				 * PAN (a truncation the decomp already flagged).
+				 */
+				static const uint8_t c32[] = { 0x32, 0x00 };
+				static const uint8_t c04[] = { 0x04, 0x00 };
+				static const uint8_t c20[] = {
+					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
+					0x35, 0x02, 0x07,0xFF,0xF8,0x00 };
+				static const struct { const uint8_t *p; uint8_t n; const char *what; } seq[] = {
+					{ c32, sizeof c32, "0x32 leave/reset" },
+					{ c04, sizeof c04, "0x04 query network" },
+					{ c20, sizeof c20, "0x20 router init, pan 0x35, mode 2" },
+				};
+
+				for (unsigned k = 0; k < sizeof(seq) / sizeof(seq[0]); k++) {
+					snprintf(line, sizeof(line), "ZBX seq %u: %s", k + 1, seq[k].what);
+					updater_emit(line);
+					zbx_send(seq[k].p, seq[k].n);
+					for (int w = 0; w < 40; w++) {
+						zbx_pump();
+						k_msleep(50);
+					}
+					safety_watchdog_feed();
+				}
+			}
+
+			/* Display state, repeated rather than printed once at boot: the boot banner is
+			 * unobservable on a USB-only unit (the CDC port stalls ~25s on open), which is
+			 * exactly the situation a dark screen leaves you in. */
+			snprintf(line, sizeof(line), "DISP panel=0x%04x bl=%d%% als=%d~%d",
+				 hx8347_panel_id(), hx8347_backlight_pct(), st.als, st.als_avg);
+			updater_emit(line);
+
+			/* Probe DISABLED for this test. Every raw byte we have seen is 0x81, arriving at
+			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
+			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
+			 * RX), not the radio, and no amount of framing work would ever have helped. */
+			if (ZBX_PROBE) {
 				/* Every one of these takes no payload and cannot change the network.
 				 * The 0x6x family is strictly paired (reply = request + 1), so any
 				 * answer at all proves the link. Cycling because a silent radio and a
@@ -391,7 +438,6 @@ int main(void)
 					0x00, 0x04, 0x07,0xFF,0xF8,0x00 };
 				static const uint8_t s30[] = { 0x30, 0x00 };
 				static const uint8_t s31[] = { 0x31, 0x00 };
-				static const uint8_t s32[] = { 0x32, 0x00 };
 				static const uint8_t q60[] = { 0x60, 0x00 };
 				/* Ordered as a sequence, not a grab-bag. The radio answers queries but
 				 * refuses 0x20/0x30 with status 0x01, which matches the documented host
