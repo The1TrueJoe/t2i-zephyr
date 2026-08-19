@@ -115,9 +115,50 @@ assertion — same sniffer, same channel, back-to-back builds differing only in 
 
 **The remote transmits, and the CA-1 receives it.** It has not joined anything yet — there is no
 coordinator with permit-join open on a PAN it will accept, so the scan finds nothing and retries.
-That is the next step, and it is ordinary work now rather than a wall: form a network on the CA-1
-over EZSP, open permit-join, and feed its real extended PAN and channel into the `0x21` payload
-instead of the placeholder `pan_lo 0x35` / own-EUI epan used here.
+### Associated with the CA-1
+
+`tools/ca1_form.js` turns the CA-1 into a coordinator over EZSP — stack profile 2, security level 5,
+`setInitialSecurityState`, `formNetwork`, `permitJoining(0xFF)`:
+
+```
+extendedPan = 5432690000000001   panId = 0x0035   channel = 15   nodeType = 1 (coordinator)
+```
+
+Pointing the T2i's `0x21` at it gets a **real MAC association**. From the coordinator's own EZSP
+callbacks — `0x23` childJoinHandler and `0x24` trustCenterJoinHandler — carrying the T2i's EUI:
+
+```
+0x23 index=00 joining=01 child=5fed c40bc105006f0d00 type=05    associates, sleepy end device
+0x24         node=5fed  c40bc105006f0d00 ...                    trust centre sees it
+0x23 index=00 joining=00 child=5fed c40bc105006f0d00 type=05    leaves again
+```
+
+A fresh short address every retry (`5fed`, `b75b`, `7c96`, `b903`, ...): it associates, fails, and
+tries again.
+
+### `cfg` = 3 is the secured join
+
+Sweeping `cfg` 0..3 against a live network is unambiguous — `cfg` 0/1/2 make no attempt at all, and
+only `cfg = 3` produces one, reproducibly ~5 s later:
+
+```
+23:29:52  0x21 join epan=as-is cfg=3
+23:29:57  ZBX rx 07 01 af        <- stack status indication
+23:31:12  0x21 join epan=as-is cfg=3
+23:31:17  ZBX rx 07 01 af        <- again, same delay
+```
+
+`0x07` is the stack status indication and `0xAF` is `EMBER_PRECONFIGURED_KEY_REQUIRED`: the EM250
+will not accept a network key sent in the clear. That is the one remaining blocker, and it is a
+key we do not have — RTI's preconfigured link key is baked into the EM250 image, which we cannot
+read.
+
+The promising line of attack is that **we control the host**. Opcodes `0x22`, `0x23`, `0x24` each
+take an 8-byte payload and have *no encoder in this build*, so stock never sends them — but two
+8-byte writes is exactly a 16-byte link key. If the EM250 accepts a host-supplied key we can simply
+set both ends to the same value. (This is the earlier "missing security material" hypothesis, which
+was right about the opcodes and wrong about which command they unblock: they were never what
+`0x20` needed.)
 
 The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
 `ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.

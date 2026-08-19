@@ -373,14 +373,30 @@ int main(void)
 			if (ZBX_PROBE) {
 				static const uint8_t c02[] = { 0x02, 0x00 };
 				static const uint8_t c04[] = { 0x04, 0x00 };
-				static const uint8_t c21[] = {
-					0x21, 0x0B, 0x35,
-					0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
-					0x02, 0x00 };
-				static const struct { const uint8_t *p; uint8_t n; const char *what; } seq[] = {
+				/* Target the CA-1: extended PAN 5432690000000001, PAN 0x0035,
+				 * channel 15, permit-join open. 0x21 carries no channel, so the
+				 * radio scans for it. The T2i's byte order for the extended PAN
+				 * is unknown, so alternate it and let the log say which took. */
+				static const uint8_t epan_be[8] = { 0x54,0x32,0x69,0x00,0x00,0x00,0x00,0x01 };
+				static unsigned zbx_pass;
+				const unsigned pass = zbx_pass++;
+				const bool rev = (pass & 1) != 0;
+				const uint8_t cfg = (pass >> 1) & 3;   /* 0..3 */
+				uint8_t c21[13] = { 0x21, 0x0B, 0x35 };
+
+				for (int e = 0; e < 8; e++) {
+					c21[3 + e] = rev ? epan_be[7 - e] : epan_be[e];
+				}
+				c21[11] = 0x02;   /* mode */
+				char c21_what[48];
+
+				snprintf(c21_what, sizeof c21_what, "0x21 join CA-1 epan=%s cfg=%u",
+					 rev ? "rev" : "as-is", cfg);
+				c21[12] = cfg;
+				const struct { const uint8_t *p; uint8_t n; const char *what; } seq[] = {
 					{ c02, sizeof c02, "0x02 open" },
 					{ c04, sizeof c04, "0x04 query network" },
-					{ c21, sizeof c21, "0x21 end-device init mode=2 cfg=0" },
+					{ c21, sizeof c21, c21_what },
 				};
 
 				for (unsigned k = zbx_brought_up ? 2 : 0;
