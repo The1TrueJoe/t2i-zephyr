@@ -370,44 +370,46 @@ int main(void)
 			 * flight for a sniffer parked on one channel to catch. */
 			static bool zbx_brought_up;
 
+			/* 0x20 is ROUTER init and this handheld's EM250 runs an end-device
+			 * image, so it is refused (status 0x01) whatever the arguments — which
+			 * is what argument-free 0x30 refusing identically meant. 0x21 is the
+			 * end-device init (FUN_080207c0: pan_lo, epan[0..7], mode, cfg), and
+			 * cfg=3 is the one value that actually attempts a secured join.
+			 *
+			 * That join reaches the CA-1 — it associates as a child and is then
+			 * dropped with stack status 0xAF, EMBER_PRECONFIGURED_KEY_REQUIRED.
+			 * We do not have RTI's link key; it lives in the EM250 image. But we
+			 * are the host, so we tried 0x22/0x23/0x24 (8 bytes each, no encoder in
+			 * stock — two writes would be a 16-byte key). All three answer status
+			 * 0x01: this radio image will not take a host-supplied key. The fix was
+			 * on the coordinator instead — see tools/ca1_form.js. */
+			static bool zbx_opened;
+
 			if (ZBX_PROBE) {
-				static const uint8_t c02[] = { 0x02, 0x00 };
-				static const uint8_t c04[] = { 0x04, 0x00 };
-				/* Target the CA-1: extended PAN 5432690000000001, PAN 0x0035,
-				 * channel 15, permit-join open. 0x21 carries no channel, so the
-				 * radio scans for it. The T2i's byte order for the extended PAN
-				 * is unknown, so alternate it and let the log say which took. */
-				static const uint8_t epan_be[8] = { 0x54,0x32,0x69,0x00,0x00,0x00,0x00,0x01 };
-				static unsigned zbx_pass;
-				const unsigned pass = zbx_pass++;
-				const bool rev = (pass & 1) != 0;
-				const uint8_t cfg = (pass >> 1) & 3;   /* 0..3 */
+				static const uint8_t epan[8] = { 0x54,0x32,0x69,0x00,0x00,0x00,0x00,0x01 };
 				uint8_t c21[13] = { 0x21, 0x0B, 0x35 };
 
-				for (int e = 0; e < 8; e++) {
-					c21[3 + e] = rev ? epan_be[7 - e] : epan_be[e];
-				}
-				c21[11] = 0x02;   /* mode */
-				char c21_what[48];
+				memcpy(&c21[3], epan, 8);
+				c21[11] = 0x02;
+				/* cfg swept 0..7: 0-2 make no attempt at all, 3-7 are all accepted
+				 * and all end at 0xAF. Nothing on this side relaxes the key
+				 * requirement, so settle on 3. */
+				c21[12] = 3;
 
-				snprintf(c21_what, sizeof c21_what, "0x21 join CA-1 epan=%s cfg=%u",
-					 rev ? "rev" : "as-is", cfg);
-				c21[12] = cfg;
-				const struct { const uint8_t *p; uint8_t n; const char *what; } seq[] = {
-					{ c02, sizeof c02, "0x02 open" },
-					{ c04, sizeof c04, "0x04 query network" },
-					{ c21, sizeof c21, c21_what },
-				};
+				if (!zbx_opened) {
+					static const uint8_t c02[] = { 0x02, 0x00 };
 
-				for (unsigned k = zbx_brought_up ? 2 : 0;
-				     k < sizeof(seq) / sizeof(seq[0]); k++) {
-					snprintf(line, sizeof(line), "ZBX seq %u: %s", k + 1, seq[k].what);
-					updater_emit(line);
-					zbx_send(seq[k].p, seq[k].n);
+					zbx_opened = true;
+					updater_emit("ZBX 0x02 open");
+					zbx_send(c02, sizeof c02);
 					for (int w = 0; w < 40; w++) { zbx_pump(); k_msleep(50); }
-					safety_watchdog_feed();
 				}
-				zbx_brought_up = true;
+
+				snprintf(line, sizeof(line), "ZBX 0x21 join cfg=%u", c21[12]);
+				updater_emit(line);
+				zbx_send(c21, sizeof c21);
+				for (int w = 0; w < 60; w++) { zbx_pump(); k_msleep(50); }
+				safety_watchdog_feed();
 			}
 
 			/* Display state, repeated rather than printed once at boot: the boot banner is

@@ -105,8 +105,10 @@ ezsp(0x53, [0x0C, ...u16(2)], "cfg stackProfile=2");
 ezsp(0x53, [0x0D, ...u16(5)], "cfg securityLevel=5");
 ezsp(0x53, [0x05, ...u16(8)], "cfg addressTableSize=8");
 
-// bitmask: HAVE_NETWORK_KEY|HAVE_PRECONFIGURED_KEY|TRUST_CENTER_GLOBAL_LINK_KEY
-ezsp(0x68, [...u16(0x0304), ...HA_KEY, ...NET_KEY, 0x00,
+// HAVE_NETWORK_KEY|HAVE_PRECONFIGURED_KEY|TRUST_CENTER_GLOBAL_LINK_KEY|REQUIRE_ENCRYPTED_KEY.
+// Without REQUIRE_ENCRYPTED_KEY (0x0800) the trust centre sends the network key in the
+// clear, which is exactly what the T2i refuses with 0xAF PRECONFIGURED_KEY_REQUIRED.
+ezsp(0x68, [...u16(0x0B04), ...HA_KEY, ...NET_KEY, 0x00,
             0, 0, 0, 0, 0, 0, 0, 0], "setInitialSecurityState");
 
 ezsp(0x20, [], "leaveNetwork", 3000);

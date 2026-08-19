@@ -153,12 +153,32 @@ will not accept a network key sent in the clear. That is the one remaining block
 key we do not have — RTI's preconfigured link key is baked into the EM250 image, which we cannot
 read.
 
-The promising line of attack is that **we control the host**. Opcodes `0x22`, `0x23`, `0x24` each
-take an 8-byte payload and have *no encoder in this build*, so stock never sends them — but two
-8-byte writes is exactly a 16-byte link key. If the EM250 accepts a host-supplied key we can simply
-set both ends to the same value. (This is the earlier "missing security material" hypothesis, which
-was right about the opcodes and wrong about which command they unblock: they were never what
-`0x20` needed.)
+Three things were tried against it, and all three are now closed:
+
+1. **Set the key from the host.** We are the host, and `0x22`/`0x23`/`0x24` each take 8 bytes with
+   no encoder in stock — two writes would be a 16-byte key. All three answer status `0x01`. This
+   radio image will not take a host-supplied key; they are dead entries, not a hidden door.
+2. **Deliver the network key encrypted.** Without `EMBER_REQUIRE_ENCRYPTED_KEY` (0x0800) an
+   EmberZNet trust centre sends the network key *in the clear*, which is exactly what `0xAF`
+   refuses — a real bug in `ca1_form.js`, now fixed (bitmask `0x0B04`). Still `0xAF`, so the key
+   we encrypt with, `ZigBeeAlliance09`, is not the one the EM250 expects.
+3. **A looser `cfg`.** `cfg` is a full byte, so it was swept 0..7. Values 0-2 make no join attempt
+   at all; 3-7 are all accepted and all end at `0xAF`. Nothing on the remote relaxes the
+   requirement.
+
+**So the single remaining unknown is RTI's preconfigured link key**, and it is baked into the EM250
+image, which cannot be read out. Every other piece of the path is proven working.
+
+Where that key might still be found, in rough order of promise:
+
+* **Integration Designer.** It is already installed in the Parallels VM and it provisions RTI
+  systems, so it plausibly ships the key or derives it. `C:\Program Files (x86)\RTI\Integration
+  Designer` is worth a string/entropy scan.
+* **An RTI XP processor image**, which is the other half of this link and must hold the same key.
+* Sniffing a genuine RTI remote joining a genuine RTI processor would show the key transport, but
+  needs hardware we do not have.
+
+Brute force is not an option: it is a 128-bit key.
 
 The relevant strings mark the path: `ZbxRx router init cmd resp`, `ZbxRx: correct or no network`,
 `ZbxRx: wrong network`, `ZbxRx stack stat ind`, `ZIGBEE UNI FAILURE - %x`.
