@@ -33,6 +33,7 @@
 #include "ir.h"
 #include "em250.h"
 #include "zbx.h"
+#include "zbnet.h"
 
 uint16_t hx8347_panel_id(void);
 int hx8347_backlight_pct(void);
@@ -46,14 +47,10 @@ void hx8347_backlight_state(uint32_t *out);
  * be past init and a few hundred render passes. */
 #define HEALTHY_AFTER_MS 10000
 
-/* Hold the debug key (stock code 180) this long to arm the watchdog self-test:
- * feeding stops, and the remote should reset itself ~8s later with the reason
- * shown as "rst WATCHDOG" on the next boot. Proving the safety net works beats
- * assuming it does. */
 /* Bumped by hand. On a USB-only remote there is otherwise no way to tell which
  * image is actually running, and "did the update commit?" is the single most
  * important question the update path has to answer. */
-#define FW_VERSION "dev"
+#define FW_VERSION "0.1.0"
 
 /* Set to 1 to reset before ever reaching safety_mark_healthy(), so the boot
  * counter climbs and safe mode engages. This is how the recovery path gets
@@ -96,23 +93,11 @@ static const struct { int above; int pct; } ALS_STEPS[] = {
 
 /* How often to report the radio link over USB. */
 #define ZBX_REPORT_MS 10000
-#define ZBX_PROBE 0
 
 /* Reflash the EM250 with RTI's ZB-Pro coordinator image, once, on the first pass after boot.
  * Set 0 once the radio already runs Telegesis — re-running just reflashes the same image
  * needlessly. */
 #define EM250_FLASH 0
-
-/* Drive the Telegesis join state machine: join the CA-1's network and heartbeat-unicast to it. */
-#define AT_JOIN 1
-
-/* Synthetic key events, so the firmware -> USB -> bridge -> CA-1 path can be proven end to end
- * with nobody holding the remote. Real presses still report normally alongside these. */
-/* Synthetic keypresses so the button->RF->CA-1 path can be proven with nobody at the keypad. Each
- * simulated DOWN queues its code for the RF unicast exactly as a real press does. Set 0 for a
- * build that only forwards real presses. */
-#define KEY_SIM     0
-#define KEY_SIM_MS  4000
 
 /* Set to 0 to pin the backlight at BACKLIGHT_PCT and ignore the sensor. */
 #define AUTO_BRIGHTNESS 1
@@ -152,53 +137,6 @@ static void safe_mode(void)
 	}
 }
 
-/* Dump anything the EM250 says, as hex, over USB CDC.
- *
- * The radio has never been talked to: src/zbx.c passes its own codec self-test but has never met
- * an EM250. Everything here is READ-ONLY by choice — 0x60 and 0x62 take no payload and the 0x6x
- * family is strictly paired (reply opcode = request + 1), so a reply proves the link end to end.
- * The network-shaped opcodes (0x20/0x21/0x26 config, 0x30-0x32, 0x40 send) are deliberately not
- * sent: this remote is joined to a live RTI system and a probe must not change that. */
-static void zbx_report(const uint8_t *p, size_t n, const char *tag)
-{
-	char line[96];
-	int w = snprintf(line, sizeof(line), "ZBX %s", tag);
-
-	for (size_t i = 0; i < n && w < (int)sizeof(line) - 4; i++) {
-		w += snprintf(line + w, sizeof(line) - (size_t)w, " %02x", p[i]);
-	}
-	updater_emit(line);
-}
-
-/* Drain the radio and report whatever arrives. The EM250 sends unsolicited indications —
- * 0x07 stack status (0x90 = joined), 0x05 network info — so this is worth running even if
- * nothing is ever transmitted. */
-static void zbx_pump(void)
-{
-	const uint8_t *frame;
-	size_t n = zbx_poll(&frame);
-
-	if (n) {
-		zbx_report(frame, n, "rx");
-	}
-}
-
-/* Printable-only dump, for the bootloader's banner and menu — emit_hex truncates too early
- * to show which option uploads an image. */
-/* Log a Telegesis AT reply as one line, control chars shown as ~. */
-static void at_log(const char *tag, char *reply)
-{
-	char line[160];
-
-	for (char *p = reply; *p; p++) {
-		if (*p == '\r' || *p == '\n') {
-			*p = '~';
-		}
-	}
-	snprintf(line, sizeof line, "AT %s -> %s", tag, reply[0] ? reply : "(silent)");
-	updater_emit(line);
-}
-
 /* Upload progress. Called every 8 blocks, mostly so the watchdog gets fed — the transfer runs far
  * longer than its ~8 s window. The emit is throttled separately so the log stays readable. */
 static void flash_progress(unsigned done, unsigned total)
@@ -211,43 +149,6 @@ static void flash_progress(unsigned done, unsigned total)
 		updater_emit(line);
 	}
 }
-
-static void emit_ascii(const char *tag, const uint8_t *b, size_t n)
-{
-	char line[200];
-	size_t k = (size_t)snprintf(line, sizeof line, "%s: ", tag);
-
-	for (size_t i = 0; i < n && k + 2 < sizeof line; i++) {
-		if (b[i] == '\r' || b[i] == '\n') {
-			line[k++] = '~';
-		} else {
-			line[k++] = (b[i] >= 0x20 && b[i] < 0x7f) ? (char)b[i] : '.';
-		}
-	}
-	line[k] = 0;
-	updater_emit(line);
-}
-
-static void emit_hex(const char *tag, const uint8_t *b, size_t n)
-{
-	char line[160];
-	size_t m = n < 32 ? n : 32;
-	size_t k = (size_t)snprintf(line, sizeof line, "%s [%u]: ", tag, (unsigned)n);
-
-	for (size_t i = 0; i < m && k + 4 < sizeof line; i++) {
-		k += (size_t)snprintf(&line[k], sizeof line - k, "%02x ", b[i]);
-	}
-	if (k + 2 < sizeof line) {
-		line[k++] = '|';
-		for (size_t i = 0; i < m && k + 2 < sizeof line; i++) {
-			line[k++] = (b[i] >= 0x20 && b[i] < 0x7f) ? (char)b[i] : '.';
-		}
-		line[k++] = '|';
-	}
-	line[k] = 0;
-	updater_emit(line);
-}
-
 
 int main(void)
 {
@@ -389,11 +290,6 @@ int main(void)
 	uint32_t beat = 0;
 	uint8_t last_reported_key = KEY_NONE;
 	static bool flashed;
-	/* A keypress waiting to go out over RF. Set by the key handler, drained by the AT join
-	 * state machine once the radio is on the CA-1's network. */
-	static volatile uint8_t rf_pending_key = KEY_NONE;
-	int64_t sim_at = 0;
-	unsigned sim_i = 0, sim_phase = 0;
 	int last_led = -1, led_pending = -1;
 	int64_t key_down_at = 0;
 	bool key_held_sent = false;
@@ -403,8 +299,12 @@ int main(void)
 	int32_t als_acc = -1;   /* EMA accumulator, value << ALS_SMOOTH */
 	int64_t zbx_last_report = 0;
 	int64_t debug_held_since = 0;
+	int64_t backlight_held_since = 0;
+	bool menu_lit = false;
 	bool healthy = false;
 	int64_t started = k_uptime_get();
+
+	zbnet_start();   /* radio runs on its own thread from here; main never touches USART3 again */
 
 	while (1) {
 		MARK(0x04, ++beat);
@@ -415,8 +315,6 @@ int main(void)
 			healthy = true;
 			st.healthy = true;
 		}
-
-		zbx_pump();
 
 		/* Report the radio periodically, not just at boot. The CDC port stalls ~25s on first
 		 * open, so a one-shot boot banner is unobservable on a unit with no SWD — by the time
@@ -443,10 +341,6 @@ int main(void)
 				 hx8347_panel_id(), hx8347_backlight_pct(), st.als, st.als_avg);
 			updater_emit(line);
 
-			/* Probe DISABLED for this test. Every raw byte we have seen is 0x81, arriving at
-			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
-			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
-			 * RX), not the radio, and no amount of framing work would ever have helped. */
 			/* Reflash the radio, once.
 			 *
 			 * RTI's TXBZB app cannot join any network we can build: it demands the
@@ -497,240 +391,11 @@ int main(void)
 				}
 			}
 
-			/* Telegesis join state machine, at the confirmed 19200 baud.
-			 *
-			 * The radio answers AT. Walk it onto the CA-1's network: confirm alive,
-			 * read status, join (the CA-1 hands over the network key in the clear),
-			 * then once joined unicast a heartbeat to the coordinator at 0x0000 so
-			 * the CA-1's incomingMessageHandler proves the RF path end to end.
-			 *
-			 * Every reply is logged. This never touches updater.c, so USB recovery
-			 * stays intact whatever this does. */
-			if (AT_JOIN) {
-				static int st_at;
-				static int joined;
-				static unsigned beat;
-				char reply[160];
-				const uint32_t B = 0x061A;   /* 19200 */
-
-				switch (st_at) {
-				case 0:   /* confirm the radio */
-					em250_at("ATI", B, reply, sizeof reply, 500);
-					at_log("ATI", reply);
-					st_at = 1;
-					break;
-				case 1:   /* trust-centre link key = ZigBeeAlliance09 (HA default) */
-					em250_at("ATS09=5A6967426565416C6C69616E63653039:password",
-						 B, reply, sizeof reply, 800);
-					at_log("S09 linkkey", reply);
-					st_at = 2;
-					break;
-				case 2:   /* channel mask = channel 15 only (bit 4) */
-					em250_at("ATS00=0010", B, reply, sizeof reply, 600);
-					at_log("S00 chan15", reply);
-					st_at = 3;
-					break;
-				case 3:   /* main function: end device (bit E) + preconfigured TC
-					   * link key (bit 8). 0x4100 joins as an end device, not a
-					   * router; 0x8100 would be a sleepy end device (battery). */
-					em250_at("ATS0A=4100:password", B, reply, sizeof reply, 600);
-					at_log("S0A enddev", reply);
-					/* xCAST framing so the coordinator's herdsman surfaces our
-					 * unicasts to the application: HA profile 0x0104 (S44), source
-					 * and destination endpoint 1 (S40 = 0x0101), cluster 0x0006
-					 * (S42). Without a real profile the frames land on Telegesis's
-					 * private 0xC091 and herdsman drops them before any converter. */
-					em250_at("ATS44=0104", B, reply, sizeof reply, 500);
-					at_log("S44 profile", reply);
-					em250_at("ATS40=0101", B, reply, sizeof reply, 500);
-					at_log("S40 endpoints", reply);
-					em250_at("ATS42=0006", B, reply, sizeof reply, 500);
-					at_log("S42 cluster", reply);
-					st_at = 4;
-					break;
-				case 4:   /* network status: already joined? */
-					em250_at("AT+N", B, reply, sizeof reply, 800);
-					at_log("AT+N", reply);
-					if (strstr(reply, "+N=") && !strstr(reply, "NoPAN")) {
-						joined = 1;
-						st_at = 6;
-					} else {
-						st_at = 5;
-					}
-					break;
-				case 5:   /* join — result streams seconds after OK */
-					em250_at_wait("AT+JN", B, reply, sizeof reply, 9000);
-					at_log("AT+JN", reply);
-					if (strstr(reply, "JPAN")) {
-						updater_emit("AT *** JOINED CA-1 ***");
-						joined = 1;
-						st_at = 6;
-					} else {
-						st_at = 4;   /* recheck / retry */
-					}
-					break;
-				case 6:   /* joined: unicast a pressed button to the coordinator (0x0000) */
-					if (joined && rf_pending_key != KEY_NONE) {
-						uint8_t k = rf_pending_key;
-						char cmd[48];
-
-						rf_pending_key = KEY_NONE;
-						/* Payload "K<code> <name>" — the code drives the Juno
-						 * remote mapping, the name keeps the CA-1 log readable. */
-						snprintf(cmd, sizeof cmd, "AT+UCAST:0000=K%u %s",
-							 k, keypad_name(k));
-						em250_at_wait(cmd, B, reply, sizeof reply, 3000);
-						at_log("UCAST key", reply);
-						/* A send that is not ACKed means the coordinator is gone
-						 * (it re-formed the mesh) — drop back to re-check and
-						 * rejoin rather than shouting at a dead network. */
-						if (!strstr(reply, "ACK")) {
-							joined = 0;
-							st_at = 4;
-						}
-					} else if (joined && (beat++ % 30) == 0) {
-						/* Keepalive; same rejoin-on-loss check as a real press. */
-						em250_at_wait("AT+UCAST:0000=IDLE", B, reply,
-							      sizeof reply, 3000);
-						at_log("UCAST idle", reply);
-						if (strstr(reply, "ERROR")) {
-							joined = 0;
-							st_at = 4;
-						}
-					}
-					break;
-				}
-				safety_watchdog_feed();
-			}
-
-			/* Display state, repeated rather than printed once at boot: the boot banner is
-			 * unobservable on a USB-only unit (the CDC port stalls ~25s on open), which is
-			 * exactly the situation a dark screen leaves you in. */
-			snprintf(line, sizeof(line), "DISP panel=0x%04x bl=%d%% als=%d~%d",
-				 hx8347_panel_id(), hx8347_backlight_pct(), st.als, st.als_avg);
-			updater_emit(line);
-
-			/* Probe DISABLED for this test. Every raw byte we have seen is 0x81, arriving at
-			 * exactly this 10s cadence — and 0x81 is the SOF our own wake burst sends. If the
-			 * bytes stop when we stop transmitting, we are hearing ourselves (TX bleeding into
-			 * RX), not the radio, and no amount of framing work would ever have helped. */
-			if (ZBX_PROBE) {
-				/* Every one of these takes no payload and cannot change the network.
-				 * The 0x6x family is strictly paired (reply = request + 1), so any
-				 * answer at all proves the link. Cycling because a silent radio and a
-				 * radio that ignores one particular opcode look identical. */
-				/* Network-shaped now, deliberately: this remote is not in service and the
-				 * whole point is to get RF off it so the CA-1's sniffer can see something.
-				 *
-				 * 0x20 layout from FUN_08020770 (docs/ZIGBEE-PROTOCOL.md): epan[0..7],
-				 * pan_lo, mode, chanmask big-endian u32. Channel 15 only (bit 15) so the
-				 * sniffer knows exactly where to listen. `mode` is not decoded, so it is
-				 * cycled — a form and a join look different on air and either proves the
-				 * link. 0x30/0x31/0x32 take no payload and are the other plausible
-				 * "start the stack" triggers. */
-				/* mode is NOT free: FUN_08019E40 only ever emits 2, 3 or 4 for 0x20
-				 * (param 1 -> 2, 2 -> 3, 0x13 -> 4). We first tried 0 and 1, which is
-				 * precisely why the radio answered status 0x01. chanmask covers 11-26
-				 * (0x07FFF800) so it may pick any channel and the sniffer sweeps. */
-				/* epan = the radio's own EUI, as reported in the 0x05 network-info frame
-				 * (c4 0b c1 05 00 6f 0d 00). An all-zero extended PAN was refused with
-				 * status 0x01, and the frame layout is byte-correct against FUN_08020770,
-				 * so the argument is what it objects to. */
-				static const uint8_t net0[] = {
-					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
-					0x00, 0x02, 0x07,0xFF,0xF8,0x00 };
-				static const uint8_t net1[] = {
-					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
-					0x00, 0x03, 0x07,0xFF,0xF8,0x00 };
-				static const uint8_t net2[] = {
-					0x20, 0x0E, 0xc4,0x0b,0xc1,0x05,0x00,0x6f,0x0d,0x00,
-					0x00, 0x04, 0x07,0xFF,0xF8,0x00 };
-				static const uint8_t s30[] = { 0x30, 0x00 };
-				static const uint8_t s31[] = { 0x31, 0x00 };
-				static const uint8_t q60[] = { 0x60, 0x00 };
-				/* Ordered as a sequence, not a grab-bag. The radio answers queries but
-				 * refuses 0x20/0x30 with status 0x01, which matches the documented host
-				 * state machine (0 uninit, 1 opened, 2 query network, 3 router init, ...)
-				 * — we were commanding a stack that had never been opened. 0x02 and 0x04
-				 * are the two zero-payload TX opcodes that plausibly do that, so they run
-				 * first and the network command follows. */
-				static const uint8_t s02[] = { 0x02, 0x00 };
-				static const uint8_t s04[] = { 0x04, 0x00 };
-				static const struct { const uint8_t *p; uint8_t n; } queries[] = {
-					{ s02, 2 }, { s04, 2 },
-					{ net0, sizeof net0 }, { net1, sizeof net1 },
-					{ net2, sizeof net2 }, { s30, 2 }, { s31, 2 },
-					{ q60, 2 },
-				};
-				static uint8_t qi;
-
-				snprintf(line, sizeof(line), "ZBX tx 0x%02x", queries[qi].p[0]);
-				updater_emit(line);
-				zbx_send(queries[qi].p, queries[qi].n);
-
-				/* Drain hard, immediately. USART3 here is polled with no RX interrupt and
-				 * no DMA, so the data register holds exactly one byte: at 115200 a reply
-				 * byte lands every ~87us, while the main loop comes round every 10ms. Every
-				 * reply we have "not received" was almost certainly received and then
-				 * overrun, leaving the single byte we kept seeing. */
-				for (int w = 0; w < 200; w++) {
-					const uint8_t *fr;
-					size_t fl = zbx_poll(&fr);
-
-					if (fl) {
-						zbx_report(fr, fl, "reply");
-					}
-					k_busy_wait(500);
-				}
-				qi = (qi + 1) % (sizeof(queries) / sizeof(queries[0]));
-			}
 		}
 
 		st.key = keypad_scan(&st.key_row, &st.key_col);
 		st.key_rows = keypad_rows();
 		st.key_name = keypad_name(st.key);
-
-		/* Synthetic key events. The pipeline (firmware -> USB -> bridge -> CA-1 ->
-		 * Juno remote contract) has to be provable with nobody holding the remote,
-		 * so KEY_SIM walks the real key table emitting the same DOWN/HELD/UP lines
-		 * a finger would. Same code path, same format — set KEY_SIM 0 for a build
-		 * that only reports real presses. */
-		if (KEY_SIM && k_uptime_get() - sim_at >= KEY_SIM_MS) {
-			static const uint8_t sim_keys[] = {
-				138,   /* Vol + */
-				139,   /* Vol - */
-				140,   /* Ch +  */
-				141,   /* Ch -  */
-				135,   /* OK    */
-				143,   /* Menu  */
-				142,   /* Guide */
-				129,   /* Mute  */
-			};
-			char ev[48];
-			uint8_t k = sim_keys[sim_i % (sizeof sim_keys)];
-
-			sim_at = k_uptime_get();
-			switch (sim_phase) {
-			case 0:
-				rf_pending_key = k;   /* feed the RF path, as a real press does */
-				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
-					 k, keypad_name(k), 0, 0);
-				updater_emit(ev);
-				sim_phase = (sim_i % 3 == 0) ? 1 : 2;   /* every third is a hold */
-				break;
-			case 1:
-				snprintf(ev, sizeof(ev), "KEY HELD %u %s", k, keypad_name(k));
-				updater_emit(ev);
-				sim_phase = 2;
-				break;
-			default:
-				snprintf(ev, sizeof(ev), "KEY UP %u %s", k, keypad_name(k));
-				updater_emit(ev);
-				sim_phase = 0;
-				sim_i++;
-				break;
-			}
-		}
 
 		/* Report key transitions to the host over USB CDC. This is the path to
 		 * publishing button presses without the radio: tools/t2i_mqtt_bridge.py
@@ -740,7 +405,23 @@ int main(void)
 
 			if (st.key != KEY_NONE) {
 				beep_click();   /* stock clicks on every key, not just some */
-				rf_pending_key = st.key;   /* queue it for the RF unicast */
+				if (st.menu) {
+					/* The menu is modal: the D-pad navigates it locally and
+					 * nothing goes out over RF. */
+					switch (st.key) {
+					case KEY_DOWN: if (st.menu < 2) { st.menu++; } break;
+					case KEY_UP:   if (st.menu > 1) { st.menu--; } break;
+					case KEY_EXIT:
+					case KEY_BACK:  st.menu = 0; break;
+					default: break;
+					}
+					ui_invalidate();
+				} else if (st.key != KEY_BACKLIGHT) {
+					/* Backlight is a local key (hold = menu); every other key
+					 * is a remote button and is unicast at once by the radio
+					 * thread. */
+					zbnet_send_key(st.key);
+				}
 				snprintf(ev, sizeof(ev), "KEY DOWN %u %s r%d c%d",
 					 st.key, st.key_name, st.key_row, st.key_col);
 			} else {
@@ -752,11 +433,6 @@ int main(void)
 
 			key_down_at = (st.key != KEY_NONE) ? k_uptime_get() : 0;
 			key_held_sent = false;
-
-			/* Info toggles the full bring-up dump. */
-			if (st.key == KEY_INFO) {
-				st.debug = !st.debug;
-			}
 
 			/* IR check, DISABLED: sending a frame browns the remote out. A
 			 * NEC header is a 9ms mark, and if the envelope on PB15 is not
@@ -785,8 +461,23 @@ int main(void)
 			key_held_sent = true;
 		}
 
-		/* debug key: hold to arm the watchdog self-test */
-		if (st.key == KEY_DEBUG) {
+		/* Hold Backlight to open the on-device menu at the connectivity page.
+		 * The menu forces the screen bright so it is readable in the dark. */
+		if (st.key == KEY_BACKLIGHT) {
+			if (backlight_held_since == 0) {
+				backlight_held_since = k_uptime_get();
+			} else if (st.menu == 0 &&
+				   k_uptime_get() - backlight_held_since >= KEY_HOLD_MS) {
+				st.menu = 1;
+				ui_invalidate();
+			}
+		} else {
+			backlight_held_since = 0;
+		}
+
+		/* Watchdog self-test now lives on the debug page: hold OK there to arm
+		 * it. Off the main path so it cannot fire by accident. */
+		if (st.menu == 2 && st.key == KEY_SELECT) {
 			if (debug_held_since == 0) {
 				debug_held_since = k_uptime_get();
 			}
@@ -825,6 +516,7 @@ int main(void)
 			ui_invalidate();
 			funlight_init();     /* stock re-sends the resync command on wake */
 			last_led = -1;       /* force the indicator to be re-applied */
+			st.menu = 0;         /* always wake to the main screen */
 		}
 
 		accel_read(&st.accel_x, &st.accel_y, &st.accel_z);
@@ -847,8 +539,18 @@ int main(void)
 		st.charger = battery_charger_present();
 		st.charge_state = battery_charge_state();
 
+		/* Menu forces the screen bright — you opened it to read it. Leaving the
+		 * menu hands brightness back to the ambient-light logic. */
+		if (st.menu && !menu_lit) {
+			display_set_brightness(disp, 255);
+			menu_lit = true;
+		} else if (!st.menu && menu_lit) {
+			menu_lit = false;
+			als_step = -1;   /* force auto-brightness to re-apply below */
+		}
+
 		/* Auto-brightness. Only written on an actual change: every write reprograms TIM2. */
-		if (AUTO_BRIGHTNESS && als_acc >= 0) {
+		if (AUTO_BRIGHTNESS && !st.menu && als_acc >= 0) {
 			int step = 0;
 
 			while (ALS_STEPS[step].above >= 0 && st.als_avg <= ALS_STEPS[step].above) {
@@ -897,6 +599,7 @@ int main(void)
 			       &st.touch_min_y, &st.touch_max_y);
 		st.touch_down = touched;
 		st.asleep = power_asleep();
+		st.rf_joined = zbnet_joined();
 		st.wakes = power_wakes();
 		st.woke_by = power_woke_by();
 		st.wake_irqs = wake_count();

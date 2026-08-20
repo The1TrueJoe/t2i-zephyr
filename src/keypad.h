@@ -6,11 +6,18 @@
 
 #define KEY_NONE 0xFF
 
-/* Stock RTI code 180 (row 6, col 1). Reserved as our debug key: held down it
- * triggers diagnostics rather than any normal remote function. */
-#define KEY_DEBUG 180
-#define IR_TEST_KEY 149   /* Record */
-#define KEY_INFO    144
+/* Stock RTI code 180 (row 6, col 1) is the Backlight button. Held, it opens the
+ * on-device menu (and lights the screen); it is never sent over RF. */
+#define KEY_BACKLIGHT 180
+#define IR_TEST_KEY   149   /* Record */
+#define KEY_INFO      144
+
+/* Codes used to navigate the on-device menu (see main.c). */
+#define KEY_EXIT   128
+#define KEY_UP     131
+#define KEY_DOWN   134
+#define KEY_SELECT 135
+#define KEY_BACK   179
 
 /* 8x7 matrix: columns PC0-7 (driven), rows PE0/1/2/12-15 (sensed, active low). */
 void keypad_init(void);

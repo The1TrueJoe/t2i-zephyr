@@ -258,14 +258,21 @@ static void usb_bringup(void)
 
 void updater_emit(const char *line)
 {
+	/* Serialised: the radio thread emits AT logs while the UI thread emits its
+	 * own lines, and uart_poll_out is per-character — without the lock the two
+	 * would interleave mid-line on the CDC port. */
+	static K_MUTEX_DEFINE(emit_lock);
+
 	if (active || !line) {
 		return;   /* never interleave with a firmware transfer */
 	}
+	k_mutex_lock(&emit_lock, K_FOREVER);
 	for (const char *p = line; *p; p++) {
 		uart_poll_out(cdc, (unsigned char)*p);
 	}
 	uart_poll_out(cdc, '\r');
 	uart_poll_out(cdc, '\n');
+	k_mutex_unlock(&emit_lock);
 }
 
 bool updater_busy(void)      { return active; }

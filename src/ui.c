@@ -156,7 +156,7 @@ void ui_invalidate(void)
 
 void ui_render(const struct t2i_status *st)
 {
-	char b[288];
+	char b[384];
 
 	if (st->wdt_test_armed) {
 		snprintf(b, sizeof(b),
@@ -171,23 +171,25 @@ void ui_render(const struct t2i_status *st)
 		 * host is mid-transfer, so show only that. */
 		snprintf(b, sizeof(b), "USB UPDATE\n\n%u / %u bytes\n\ndo not disconnect",
 			 st->usb_received, st->usb_declared);
-	} else if (!st->debug) {
-		/* Everything that was on the bring-up screen is still one Info press
-		 * away — it just is not what you want to look at once it all works. */
+	} else if (st->menu == 1) {
+		/* Connectivity — the most basic health, and the first thing the menu
+		 * shows. Down steps to the debug readouts. */
 		snprintf(b, sizeof(b),
-			 "key %d %s\n\nbatt %d%s\n\n%s\n\nInfo = debug%s",
-			 st->key == 0xFF ? -1 : st->key, st->key_name ? st->key_name : "-",
-			 st->batt_raw, st->batt_low ? " LOW" : "",
-			 st->asleep ? "ASLEEP" : "awake",
-			 st->recovery ? "\nRECOVERY (no sleep)" : "");
-	} else {
+			 "CONNECTIVITY\n\nZigBee: %s\nchannel 15\nbattery %s\n\n"
+			 "Down: debug\nExit: close",
+			 st->rf_joined ? "JOINED" : "joining...",
+			 st->batt_low ? "LOW" : "ok");
+	} else if (st->menu == 2) {
+		/* Debug readouts — the old bring-up dump, now behind the menu. Single
+		 * newlines so it all fits with the nav header on top. */
 		snprintf(b, sizeof(b),
-			 "touch %s\n raw %d,%d z%d\n X %d-%d\n Y %d-%d\n\n"
-			 "accel %s\n x%d y%d z%d\n\n"
-			 "key %d %s\n r%d c%d  rows 0x%02x\n"
-			 "batt %d%s  chg %d/%d\n als %d~%d  bl %d%%\n\n"
-			 "%s  wakes %u\n irqs %u  motions %u\n woke by %s\n"
-			 "stops %u  clk %s\nboot %u%s  rst %s%s",
+			 "DEBUG  Up:info Exit:close\n"
+			 "touch %s raw %d,%d z%d\n X %d-%d Y %d-%d\n"
+			 "accel %s %d,%d,%d\n"
+			 "key %d %s r%d c%d 0x%02x\n"
+			 "batt %d%s chg %d/%d\n als %d~%d bl %d%%\n"
+			 "%s wakes %u irqs %u\n motions %u woke %s\n"
+			 "stops %u clk %s\nboot %u%s rst %s%s",
 			 st->touch_down ? "DOWN" : "up",
 			 st->touch_x, st->touch_y, st->touch_z,
 			 st->touch_min_x, st->touch_max_x,
@@ -205,11 +207,21 @@ void ui_render(const struct t2i_status *st)
 			 st->reset_cause,
 			 st->recovery ? "\nRECOVERY (no sleep)" : "");
 
-	if (st->debug_hold_ms) {
-		char h[48];
-		snprintf(h, sizeof(h), "\nDEBUG held %u ms", st->debug_hold_ms);
-		strncat(b, h, sizeof(b) - strlen(b) - 1);
-	}
+		if (st->debug_hold_ms) {
+			char h[48];
+			snprintf(h, sizeof(h), "\nDEBUG held %u ms", st->debug_hold_ms);
+			strncat(b, h, sizeof(b) - strlen(b) - 1);
+		}
+	} else {
+		/* Main screen. A real user-navigable UI replaces this later; until
+		 * then it stays minimal, but keeps the button-press indicator — that
+		 * line is what proves a press registered. */
+		snprintf(b, sizeof(b),
+			 "key %d %s\n\nbatt %d%s\n\n%s%s",
+			 st->key == 0xFF ? -1 : st->key, st->key_name ? st->key_name : "-",
+			 st->batt_raw, st->batt_low ? " LOW" : "",
+			 st->asleep ? "ASLEEP" : "awake",
+			 st->recovery ? "\nRECOVERY (no sleep)" : "");
 	}
 
 	lv_label_set_text(info, b);

@@ -34,9 +34,12 @@ struct t2i_status {
 	bool     charger;
 	uint8_t  charge_state;
 
+	/* radio */
+	bool     rf_joined;                      /* on the coordinator's ZigBee network */
+
 	/* power / sleep */
 	bool     asleep;
-	bool     debug;                          /* Info key toggles the full dump */
+	uint8_t  menu;                           /* 0 = main, 1 = connectivity, 2 = debug */
 	bool     recovery;                       /* held a key at boot: never sleeps */
 	uint32_t wakes;
 	uint32_t wake_irqs;
@@ -48,7 +51,7 @@ struct t2i_status {
 	uint32_t boot_attempts;                  /* consecutive boots not yet healthy */
 	bool     healthy;                        /* this boot has been declared good */
 	const char *reset_cause;                 /* why we last rebooted */
-	uint32_t debug_hold_ms;                  /* how long KEY_DEBUG has been held */
+	uint32_t debug_hold_ms;                  /* OK held on the debug page (self-test) */
 	bool     wdt_test_armed;                 /* watchdog self-test running */
 
 	/* USB updater */

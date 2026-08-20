@@ -4,7 +4,7 @@ project(t2i_fw)
 
 target_sources(app PRIVATE src/main.c src/reset_hook.c src/hx8347_fsmc.c src/touch.c
                           src/juno_logo.c src/accel.c src/keypad.c src/wake.c src/lowpower.c src/updater.c src/ui.c src/power.c src/safety.c src/battery.c src/funlight.c src/ir.c src/zbx.c
-                          src/em250.c src/etrx2_ebl.c)
+                          src/em250.c src/etrx2_ebl.c src/zbnet.c)
 
 # Binary assets are generated into C arrays at build time rather than committed as .c blobs, so
 # each can be replaced by swapping its source binary:
