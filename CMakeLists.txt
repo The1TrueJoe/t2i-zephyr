@@ -14,3 +14,13 @@ set(gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
 generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/tools/rti/etrx2.ebl ${gen_dir}/etrx2_ebl.inc)
 generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/assets/juno_logo.rgb565 ${gen_dir}/juno_logo.inc)
 target_include_directories(app PRIVATE ${gen_dir})
+
+# Firmware version is stamped from git, never hand-tagged: on a USB-only remote the
+# boot banner is the only way to confirm which commit is running.
+execute_process(
+  COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty
+  OUTPUT_VARIABLE FW_GIT_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT FW_GIT_VERSION)
+  set(FW_GIT_VERSION "nogit")
+endif()
+target_compile_definitions(app PRIVATE FW_GIT_VERSION="${FW_GIT_VERSION}")

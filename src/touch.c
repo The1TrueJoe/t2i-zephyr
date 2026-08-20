@@ -170,9 +170,38 @@ static void beep_park(void)
 	GPIO_BSRR(GPIO_PORT_B) = 1u << (7 + 16);
 }
 
-static void beep_tone(int ms)
+/* Beep volume, persisted in retained high RAM — the same trick safety.c uses for
+ * its boot counter: an address above every linked section, so the C startup does
+ * not zero it and it survives a warm/watchdog reset. A power cycle loses it and
+ * falls back to the default, which is fine for a click volume. Volume IS the PWM
+ * duty: a square wave drives the transducer hardest at 50%, so a smaller duty is
+ * quieter and 0 is silent. */
+#define BEEP_SETTING (*(volatile uint32_t *)0x2001FF40U)
+#define BEEP_MAGIC   0xBEE90000U
+#define BEEP_VOL_MAX 3
+static const uint8_t beep_vol_div[] = { 0, 16, 6, 2 };   /* level -> arr/div; 0 off .. 3 = 50% */
+
+int beep_get_volume(void)
 {
-	TIM4_CCR2 = beep_arr / 2;               /* 50% */
+	uint32_t w = BEEP_SETTING;
+	if ((w & 0xFFFF0000U) != BEEP_MAGIC || (w & 0xFFu) > BEEP_VOL_MAX) {
+		BEEP_SETTING = BEEP_MAGIC | 2u;   /* cold boot / garbage -> default medium */
+		return 2;
+	}
+	return (int)(w & 0xFFu);
+}
+
+void beep_set_volume(int level)
+{
+	if (level < 0) level = 0;
+	if (level > BEEP_VOL_MAX) level = BEEP_VOL_MAX;
+	BEEP_SETTING = BEEP_MAGIC | (uint32_t)level;
+}
+
+static void beep_burst(int ms, uint32_t duty)
+{
+	if (duty == 0) return;                  /* off: never drive the pin */
+	TIM4_CCR2 = duty;
 	TIM4_EGR  = TIM_EGR_UG;
 	GPIO_MODER(GPIO_PORT_B) = (GPIO_MODER(GPIO_PORT_B) & ~(3u << (7 * 2)))
 				  | (GPIO_MODE_AF << (7 * 2));
@@ -182,7 +211,15 @@ static void beep_tone(int ms)
 	beep_park();
 }
 
-void beep_click(void) { beep_tone(BEEP_MS); }
+static void beep_tone(int ms) { beep_burst(ms, beep_arr / 2); }   /* full volume, for beep_test */
+
+void beep_click(void)
+{
+	int level = beep_get_volume();
+	if (level > 0) {
+		beep_burst(BEEP_MS, beep_arr / beep_vol_div[level]);
+	}
+}
 
 void beep_test(void)
 {

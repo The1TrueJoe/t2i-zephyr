@@ -15,6 +15,8 @@
 /* Codes used to navigate the on-device menu (see main.c). */
 #define KEY_EXIT   128
 #define KEY_UP     131
+#define KEY_LEFT   132
+#define KEY_RIGHT  133
 #define KEY_DOWN   134
 #define KEY_SELECT 135
 #define KEY_BACK   179

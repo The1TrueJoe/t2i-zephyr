@@ -47,10 +47,13 @@ void hx8347_backlight_state(uint32_t *out);
  * be past init and a few hundred render passes. */
 #define HEALTHY_AFTER_MS 10000
 
-/* Bumped by hand. On a USB-only remote there is otherwise no way to tell which
- * image is actually running, and "did the update commit?" is the single most
- * important question the update path has to answer. */
-#define FW_VERSION "0.1.0"
+/* Stamped from git at build time (git describe --always --dirty) — never
+ * hand-tagged. On a USB-only remote the boot banner is still the only way to
+ * confirm which commit is actually running. */
+#ifndef FW_GIT_VERSION
+#define FW_GIT_VERSION "nogit"
+#endif
+#define FW_VERSION FW_GIT_VERSION
 
 /* Set to 1 to reset before ever reaching safety_mark_healthy(), so the boot
  * counter climbs and safe mode engages. This is how the recovery path gets
@@ -404,15 +407,34 @@ int main(void)
 			char ev[48];
 
 			if (st.key != KEY_NONE) {
-				beep_click();   /* stock clicks on every key, not just some */
+				/* A volume adjust previews the new level itself, so skip the
+				 * click there; every other key clicks. */
+				bool vol_adjust = (st.menu == 2 &&
+						   (st.key == KEY_LEFT || st.key == KEY_RIGHT));
+				if (!vol_adjust) {
+					beep_click();   /* stock clicks on every key, not just some */
+				}
 				if (st.menu) {
 					/* The menu is modal: the D-pad navigates it locally and
-					 * nothing goes out over RF. */
+					 * nothing goes out over RF. Pages: 1 connectivity,
+					 * 2 settings, 3 debug. */
 					switch (st.key) {
-					case KEY_DOWN: if (st.menu < 2) { st.menu++; } break;
+					case KEY_DOWN: if (st.menu < 3) { st.menu++; } break;
 					case KEY_UP:   if (st.menu > 1) { st.menu--; } break;
 					case KEY_EXIT:
 					case KEY_BACK:  st.menu = 0; break;
+					case KEY_LEFT:   /* settings: quieter */
+						if (st.menu == 2) {
+							beep_set_volume(beep_get_volume() - 1);
+							beep_click();   /* preview at the new level */
+						}
+						break;
+					case KEY_RIGHT:  /* settings: louder */
+						if (st.menu == 2) {
+							beep_set_volume(beep_get_volume() + 1);
+							beep_click();
+						}
+						break;
 					default: break;
 					}
 					ui_invalidate();
@@ -477,7 +499,7 @@ int main(void)
 
 		/* Watchdog self-test now lives on the debug page: hold OK there to arm
 		 * it. Off the main path so it cannot fire by accident. */
-		if (st.menu == 2 && st.key == KEY_SELECT) {
+		if (st.menu == 3 && st.key == KEY_SELECT) {
 			if (debug_held_since == 0) {
 				debug_held_since = k_uptime_get();
 			}
@@ -600,6 +622,7 @@ int main(void)
 		st.touch_down = touched;
 		st.asleep = power_asleep();
 		st.rf_joined = zbnet_joined();
+		st.beep_vol = (uint8_t)beep_get_volume();
 		st.wakes = power_wakes();
 		st.woke_by = power_woke_by();
 		st.wake_irqs = wake_count();

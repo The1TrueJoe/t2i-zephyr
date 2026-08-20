@@ -39,7 +39,8 @@ struct t2i_status {
 
 	/* power / sleep */
 	bool     asleep;
-	uint8_t  menu;                           /* 0 = main, 1 = connectivity, 2 = debug */
+	uint8_t  menu;                           /* 0 = main, 1 = connectivity, 2 = settings, 3 = debug */
+	uint8_t  beep_vol;                        /* click volume 0..3, shown on the settings page */
 	bool     recovery;                       /* held a key at boot: never sleeps */
 	uint32_t wakes;
 	uint32_t wake_irqs;

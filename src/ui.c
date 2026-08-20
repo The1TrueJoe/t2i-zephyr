@@ -173,17 +173,24 @@ void ui_render(const struct t2i_status *st)
 			 st->usb_received, st->usb_declared);
 	} else if (st->menu == 1) {
 		/* Connectivity — the most basic health, and the first thing the menu
-		 * shows. Down steps to the debug readouts. */
+		 * shows. Down steps to settings, then the debug readouts. */
 		snprintf(b, sizeof(b),
 			 "CONNECTIVITY\n\nZigBee: %s\nchannel 15\nbattery %s\n\n"
-			 "Down: debug\nExit: close",
+			 "Down: settings\nExit: close",
 			 st->rf_joined ? "JOINED" : "joining...",
 			 st->batt_low ? "LOW" : "ok");
 	} else if (st->menu == 2) {
+		/* Settings — adjust with Left/Right. Beep is the key-click volume. */
+		static const char *const vol[] = { "OFF", "LOW", "MED", "HIGH" };
+		snprintf(b, sizeof(b),
+			 "SETTINGS\n\nBeep:  %s\n  Left / Right : adjust\n\n"
+			 "Up: connectivity\nDown: debug\nExit: close",
+			 vol[st->beep_vol <= 3 ? st->beep_vol : 3]);
+	} else if (st->menu == 3) {
 		/* Debug readouts — the old bring-up dump, now behind the menu. Single
 		 * newlines so it all fits with the nav header on top. */
 		snprintf(b, sizeof(b),
-			 "DEBUG  Up:info Exit:close\n"
+			 "DEBUG  Up:settings Exit:close\n"
 			 "touch %s raw %d,%d z%d\n X %d-%d Y %d-%d\n"
 			 "accel %s %d,%d,%d\n"
 			 "key %d %s r%d c%d 0x%02x\n"
