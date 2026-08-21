@@ -4,13 +4,22 @@
   "vendor": "RTI",
   "proxy": "remote",
   "comment": "Driver-owned decoder; core reads it as data. The radio unicasts each button as ASCII 'K<code>' on genOnOff. Every code emits an action, so all 53 buttons are automation triggers in core, not only those that resolve to a room command.",
-
-  "fingerprint": { "profile": 49297, "endpoint": 1, "in_clusters": [2, 3, 11, 13] },
-
+  "fingerprint": {
+    "profile": 49297,
+    "endpoint": 1,
+    "in_clusters": [
+      2,
+      3,
+      11,
+      13
+    ]
+  },
   "decode": [
     {
       "cluster": "genOnOff",
-      "match": { "raw": "^K(\\d+)" },
+      "match": {
+        "raw": "^K(\\d+)"
+      },
       "emit": "action",
       "map": {
         "128": "exit",
@@ -64,5 +73,6 @@
         "176": "blue"
       }
     }
-  ]
+  ],
+  "assume_without_interview": true
 }
