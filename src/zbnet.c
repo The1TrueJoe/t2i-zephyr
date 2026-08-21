@@ -64,6 +64,19 @@ static bool join_once(void)
 {
 	char reply[160];
 
+	/* Already on a network? Asked *first*, because the setup below is not free to repeat:
+	 * `ATS0A` rewrites the module's main function, and doing that to a node that is already
+	 * joined drops it off the mesh. That is what turned a single missed ACK into a handset
+	 * that unjoined itself and then had nowhere to send the key — every press after it read
+	 * `AT+N=NoPAN` and no unicast ever left. The S-registers below live in the module's NVM
+	 * and survive a reset, so a node that is on a network has been through this already.
+	 */
+	em250_at("AT+N", AT_BRR, reply, sizeof reply, 800);
+	log_at("AT+N", reply);
+	if (strstr(reply, "+N=") && !strstr(reply, "NoPAN")) {
+		return true;
+	}
+
 	em250_at("ATI", AT_BRR, reply, sizeof reply, 500);
 	log_at("ATI", reply);
 
@@ -91,13 +104,6 @@ static bool join_once(void)
 	log_at("S40 endpoints", reply);
 	em250_at("ATS42=0006", AT_BRR, reply, sizeof reply, 500);
 	log_at("S42 cluster", reply);
-
-	/* already on a network? */
-	em250_at("AT+N", AT_BRR, reply, sizeof reply, 800);
-	log_at("AT+N", reply);
-	if (strstr(reply, "+N=") && !strstr(reply, "NoPAN")) {
-		return true;
-	}
 
 	/* join — JPAN streams seconds after the OK, so read the whole window. */
 	em250_at_wait("AT+JN", AT_BRR, reply, sizeof reply, 9000);
