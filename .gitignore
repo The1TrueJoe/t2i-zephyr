@@ -3,3 +3,5 @@ build/
 *.o
 *.obj
 backups/
+build/
+juno-driver/driver.wasm
